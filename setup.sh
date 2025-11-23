@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: Full Featured (Socat Fix + Force Install)
+# Description: Full Featured (Old VMess Format Fix)
 # ==================================================
 
 # --- 核心参数 ---
@@ -35,45 +35,27 @@ check_root() {
     [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行" && exit 1
 }
 
-# --- 强力依赖安装 (修复 socat 问题) ---
+# --- 依赖安装 ---
 install_dependencies() {
     log_info "更新系统源并安装依赖..."
-    
     if [ -f /etc/debian_version ]; then
-        # Debian/Ubuntu
         apt-get update -y
-        # 尝试安装核心工具
         apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat
-        
-        # 二次检查 socat 是否存在
         if ! command -v socat &> /dev/null; then
-            log_warn "检测到 socat 安装失败，正在尝试强制修复..."
-            apt-get update --fix-missing
-            apt-get install -y socat
+            apt-get update --fix-missing && apt-get install -y socat
         fi
-        
     elif [ -f /etc/redhat-release ]; then
-        # CentOS/RHEL
-        yum update -y
-        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof
-        
+        yum update -y && yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof
         if ! command -v socat &> /dev/null; then
-            log_warn "检测到 socat 安装失败，尝试使用 EPEL 源..."
-            yum install -y epel-release
-            yum install -y socat
+            yum install -y epel-release && yum install -y socat
         fi
     else
-        log_err "不支持的系统，请手动安装 socat 后重试" && exit 1
-    fi
-
-    # 最终确认
-    if ! command -v socat &> /dev/null; then
-        log_err "致命错误: socat 安装失败！acme.sh 无法运行。"
-        log_err "请尝试手动运行: apt-get install socat (Debian) 或 yum install socat (CentOS)"
-        exit 1
+        log_err "不支持的系统" && exit 1
     fi
     
-    log_info "依赖安装完成 (Socat: $(socat -V | head -n1 | awk '{print $2}'))"
+    if ! command -v socat &> /dev/null; then
+        log_err "socat 安装失败，脚本无法继续。" && exit 1
+    fi
     systemctl stop nginx
 }
 
@@ -97,13 +79,10 @@ setup_cert() {
     
     log_info "释放 80 端口..."
     systemctl stop nginx
-    # 暴力杀掉占用 80 端口的进程
     if lsof -i :80 > /dev/null; then
-        log_warn "发现 80 端口被占用，强制清理..."
         kill -9 $(lsof -t -i:80)
     fi
     
-    # 申请证书
     "$ACME_SH" --issue -d "$domain" --standalone --keylength ec-256 --force
     
     if [ $? -eq 0 ]; then
@@ -115,7 +94,7 @@ setup_cert() {
             --reloadcmd     "systemctl restart nginx"
         return 0
     else
-        log_err "证书申请失败！请检查域名解析和防火墙。"
+        log_err "证书申请失败！"
         return 1
     fi
 }
@@ -269,8 +248,9 @@ EOF
     systemctl restart eljefe-v2
 }
 
+# --- 链接生成模块 (兼容性终极修复) ---
 show_info() {
-    [ ! -f "$INSTALL_DIR/info.txt" ] && log_err "未找到配置，请先安装" && return
+    [ ! -f "$INSTALL_DIR/info.txt" ] && log_err "未找到配置" && return
     source "$INSTALL_DIR/info.txt"
     IP=$(curl -s4 https://api.ipify.org | tr -d '\n')
     UUID=$(echo $UUID | tr -d '\n')
@@ -280,14 +260,21 @@ show_info() {
     SNI=$(echo $SNI | tr -d '\n')
     [[ -z "$SNI" ]] && SNI="$DEST_SNI"
 
-    # Reality Link
+    # 1. Reality Link (标准化)
     LINK_REALITY="vless://${UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUB_KEY}&sid=${SID}&type=tcp&headerType=none#ElJefe_Reality"
     
-    # VMess Link
+    # 2. VMess Link (仿旧版格式 - 参数拼接型)
     if [[ -n "$DOMAIN" ]]; then
-        VMESS_JSON='{"v":"2","ps":"ElJefe_VMess_CDN","add":"'"$DOMAIN"'","port":"'"$PORT_TLS"'","id":"'"$UUID"'","aid":"0","scy":"auto","net":"ws","type":"none","host":"'"$DOMAIN"'","path":"/eljefe","tls":"tls","sni":"'"$DOMAIN"'"}'
-        VMESS_B64=$(echo -n "$VMESS_JSON" | base64 -w 0)
-        LINK_VMESS="vmess://$VMESS_B64"
+        # 构造核心认证信息: auto:UUID@Host:Port
+        VMESS_BASE="auto:${UUID}@${DOMAIN}:${PORT_TLS}"
+        # Base64 编码核心部分
+        VMESS_BASE_B64=$(echo -n "$VMESS_BASE" | base64 -w 0)
+        
+        # 拼接 URL 参数
+        # 这里的 path, tls, peer, obfs 等参数完全模仿你提供的样本
+        PARAMS="path=/eljefe&remarks=ElJefe_VMess_CDN&obfsParam=${DOMAIN}&obfs=websocket&tls=1&peer=${DOMAIN}&alterId=0"
+        
+        LINK_VMESS="vmess://${VMESS_BASE_B64}?${PARAMS}"
     fi
 
     echo ""
@@ -296,7 +283,7 @@ show_info() {
     echo -e "${GREEN}$LINK_REALITY${PLAIN}"
     echo ""
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "${YELLOW}[备用通道] VMess-WS-TLS${PLAIN}"
+        echo -e "${YELLOW}[备用通道] VMess-WS-TLS (兼容格式)${PLAIN}"
         echo -e "${GREEN}$LINK_VMESS${PLAIN}"
     else
         echo -e "${RED}[备用通道] 未配置域名${PLAIN}"
@@ -334,7 +321,7 @@ uninstall_all() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v4.1 SocatFix]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v5.0 Final]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装 (Install)"
     echo -e "  ${GREEN}2.${PLAIN} 查看链接 (Show Info)"
