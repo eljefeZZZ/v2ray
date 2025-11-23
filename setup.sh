@@ -241,10 +241,11 @@ EOF
     systemctl restart eljefe-v2
 }
 
-# --- 8. 信息展示 (含 VMess Base64) ---
+# --- 8. 信息展示 (修复 VMess 链接) ---
 show_info() {
     [ ! -f "$INSTALL_DIR/info.txt" ] && return
     source "$INSTALL_DIR/info.txt"
+    # 清理所有换行符
     IP=$(curl -s4 https://api.ipify.org | tr -d '\n')
     UUID=$(echo $UUID | tr -d '\n')
     PUB_KEY=$(echo $PUB_KEY | tr -d '\n')
@@ -256,10 +257,11 @@ show_info() {
     
     # 2. VMess Link
     if [[ -n "$DOMAIN" ]]; then
-        # 构造 VMess JSON
-        VMESS_JSON="{\"v\":\"2\",\"ps\":\"ElJefe_VMess_CDN\",\"add\":\"${DOMAIN}\",\"port\":\"${PORT_TLS}\",\"id\":\"${UUID}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${DOMAIN}\",\"path\":\"/eljefe\",\"tls\":\"tls\",\"sni\":\"${DOMAIN}\"}"
-        # Base64 编码
-        VMESS_B64=$(echo -n "$VMESS_JSON" | base64 | tr -d '\n')
+        # 严格的 JSON 格式，确保无多余空格
+        VMESS_JSON='{"v":"2","ps":"ElJefe_VMess_CDN","add":"'"$DOMAIN"'","port":"'"$PORT_TLS"'","id":"'"$UUID"'","aid":"0","scy":"auto","net":"ws","type":"none","host":"'"$DOMAIN"'","path":"/eljefe","tls":"tls","sni":"'"$DOMAIN"'"}'
+        
+        # 修复：Base64 编码强制为单行
+        VMESS_B64=$(echo -n "$VMESS_JSON" | base64 -w 0)
         LINK_VMESS="vmess://$VMESS_B64"
     fi
 
