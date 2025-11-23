@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: v9.0 (Add Domain Feature Added)
+# Description: v9.1 (Fix Nginx Default Page)
 # ==================================================
 
 # --- 目录结构 ---
@@ -36,7 +36,6 @@ check_root() {
     [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行" && exit 1
 }
 
-# --- 核心逻辑 ---
 install_dependencies() {
     log_info "安装依赖..."
     if [ -f /etc/debian_version ]; then
@@ -89,7 +88,7 @@ setup_cert() {
             --reloadcmd     "systemctl restart nginx"
         return 0
     else
-        log_err "证书申请失败！请检查域名解析。"
+        log_err "证书申请失败！"
         return 1
     fi
 }
@@ -98,9 +97,14 @@ setup_nginx() {
     local domain=$1
     log_info "配置 Nginx..."
 
+    # --- 关键修复: 删除默认配置 ---
+    rm -f /etc/nginx/sites-enabled/default
+    rm -f /etc/nginx/conf.d/default.conf
+    # ---------------------------
+
     cat > /etc/nginx/conf.d/eljefe_fallback.conf <<EOF
 server {
-    listen 127.0.0.1:8080;
+    listen 80;
     server_name _;
     root $WEB_DIR;
     index index.html;
@@ -282,13 +286,12 @@ change_sni() {
     show_info
 }
 
-# --- 新增功能: 添加/修改域名 ---
 add_domain() {
     log_warn "此操作将重新申请证书并覆盖当前配置。"
     read -p "请输入你的域名 (例如 v2.example.com): " new_domain
     [[ -z "$new_domain" ]] && return
     
-    source "$ROOT_DIR/info.txt" # 读取旧 SNI 配置
+    source "$ROOT_DIR/info.txt"
     
     setup_cert "$new_domain"
     if [ $? -eq 0 ]; then
@@ -324,7 +327,7 @@ uninstall_all() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v9.0 Final]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v9.1 Nginx Fix]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装 (Install)"
     echo -e "  ${GREEN}2.${PLAIN} 查看链接 (Show Info)"
