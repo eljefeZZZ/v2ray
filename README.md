@@ -131,6 +131,3 @@ A: 运行 `./setup.sh` -> 选择 **4. 修改伪装 SNI** -> 输入你想伪装�
   Made with ❤️ by <a href="https://github.com/eljefeZZZ">eljefeZZZ</a>
 </p>
 ```
-[8](https://gitee.com/zhangjrTemp/Best_README_template?skip_mobile=true)
-[9](https://github.com/eryajf/awesome-github-profile-readme-chinese)
-[10](https://github.com/matiassingers/awesome-readme)
