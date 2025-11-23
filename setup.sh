@@ -3,61 +3,99 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: Secure, modular Xray+Nginx deployment
+# Description: Reality (Main) + VMess-WS-TLS (Backup)
 # ==================================================
 
-# --- 配置参数 ---
+# --- 核心参数 ---
 XRAY_REPO="XTLS/Xray-core"
 INSTALL_DIR="/usr/local/eljefe-v2"
 XRAY_BIN="$INSTALL_DIR/xray"
 CONFIG_FILE="$INSTALL_DIR/config.json"
 WEB_DIR="/var/www/html/camouflag"
-# 伪装用的目标网站
+ACME_SH="$INSTALL_DIR/acme.sh/acme.sh"
+
+# Reality 偷取目标
 DEST_SITE="www.microsoft.com:443"
 DEST_SNI="www.microsoft.com"
 
-# --- 颜色定义 ---
+# 端口定义
+PORT_REALITY=443      # 主通道 (Reality)
+PORT_WS_LOCAL=2087    # 备用通道 (VMess) 本地监听
+PORT_TLS=8443         # 备用通道 (TLS) 对外端口
+
+# --- 颜色 ---
 RED='\033[31m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
 BLUE='\033[34m'
 PLAIN='\033[0m'
 
-# --- 基础函数 ---
+# --- 日志函数 ---
 log_info() { echo -e "${GREEN}[INFO]${PLAIN} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERROR]${PLAIN} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 
 check_root() {
-    [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行此脚本" && exit 1
+    [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行" && exit 1
 }
 
-# --- 1. 环境准备 ---
+# --- 1. 依赖安装 ---
 install_dependencies() {
-    log_info "正在更新系统并安装依赖..."
+    log_info "安装依赖..."
     if [ -f /etc/debian_version ]; then
-        apt-get update -y && apt-get install -y curl wget unzip jq nginx uuid-runtime socat openssl
+        apt-get update -y && apt-get install -y curl wget unzip jq nginx uuid-runtime socat openssl cron
     elif [ -f /etc/redhat-release ]; then
-        yum update -y && yum install -y curl wget unzip jq nginx uuid socat openssl
+        yum update -y && yum install -y curl wget unzip jq nginx uuid socat openssl cronie
     else
-        log_err "不支持的操作系统" && exit 1
+        log_err "不支持的系统" && exit 1
     fi
+    systemctl enable nginx
 }
 
-# --- 2. 伪装站点部署 ---
+# --- 2. 伪装站 ---
 setup_fake_site() {
-    log_info "正在部署伪装站点..."
+    log_info "部署伪装站点..."
     mkdir -p "$WEB_DIR"
-    
     if [ ! -f "$WEB_DIR/index.html" ]; then
-        wget -qO "$INSTALL_DIR/web.zip" "https://github.com/startbootstrap/startbootstrap-resume/archive/gh-pages.zip"
-        unzip -q -o "$INSTALL_DIR/web.zip" -d "$INSTALL_DIR/temp_web"
-        mv "$INSTALL_DIR/temp_web/startbootstrap-resume-gh-pages/"* "$WEB_DIR/"
-        rm -rf "$INSTALL_DIR/web.zip" "$INSTALL_DIR/temp_web"
+        wget -qO web.zip "https://github.com/startbootstrap/startbootstrap-resume/archive/gh-pages.zip"
+        unzip -q -o web.zip -d temp_web
+        mv temp_web/startbootstrap-resume-gh-pages/* "$WEB_DIR/"
+        rm -rf web.zip temp_web
         chown -R www-data:www-data "$WEB_DIR" 2>/dev/null || chown -R nginx:nginx "$WEB_DIR"
     fi
+}
 
-    cat > /etc/nginx/conf.d/eljefe_camouflage.conf <<EOF
+# --- 3. 证书申请 (仅当有域名时) ---
+setup_cert() {
+    local domain=$1
+    log_info "正在为域名 $domain 申请证书..."
+    mkdir -p "$INSTALL_DIR/acme.sh"
+    curl https://get.acme.sh | sh -s email=admin@eljefe.com --home "$INSTALL_DIR/acme.sh"
+    systemctl stop nginx
+    "$ACME_SH" --issue -d "$domain" --standalone --keylength ec-256 --force
+    
+    if [ $? -eq 0 ]; then
+        log_info "证书申请成功！"
+        mkdir -p "$INSTALL_DIR/cert"
+        "$ACME_SH" --install-cert -d "$domain" --ecc \
+            --key-file       "$INSTALL_DIR/cert/private.key" \
+            --fullchain-file "$INSTALL_DIR/cert/fullchain.cer" \
+            --reloadcmd     "systemctl restart nginx"
+        return 0
+    else
+        log_err "证书申请失败，请检查域名解析"
+        systemctl start nginx
+        return 1
+    fi
+}
+
+# --- 4. Nginx 配置 ---
+setup_nginx() {
+    local domain=$1
+    log_info "配置 Nginx..."
+
+    # 默认回落
+    cat > /etc/nginx/conf.d/eljefe_fallback.conf <<EOF
 server {
     listen 127.0.0.1:8080;
     server_name _;
@@ -66,70 +104,80 @@ server {
     access_log off;
 }
 EOF
+
+    # VMess TLS 反代
+    if [[ -n "$domain" ]]; then
+        cat > /etc/nginx/conf.d/eljefe_tls.conf <<EOF
+server {
+    listen $PORT_TLS ssl http2;
+    server_name $domain;
+
+    ssl_certificate       $INSTALL_DIR/cert/fullchain.cer;
+    ssl_certificate_key   $INSTALL_DIR/cert/private.key;
+    ssl_protocols         TLSv1.2 TLSv1.3;
+    ssl_ciphers           HIGH:!aNULL:!MD5;
+
+    root $WEB_DIR;
+    index index.html;
+
+    location /eljefe {
+        if (\$http_upgrade != "websocket") {
+            return 404;
+        }
+        proxy_redirect off;
+        proxy_pass http://127.0.0.1:$PORT_WS_LOCAL;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    }
+}
+EOF
+    fi
     systemctl restart nginx
-    log_info "伪装站点部署完成 (Local Port: 8080)"
 }
 
-# --- 3. 核心安装与更新 ---
+# --- 5. Xray 安装 ---
 install_xray() {
-    log_info "正在获取最新 Xray 内核版本..."
+    log_info "安装 Xray..."
     LATEST_VER=$(curl -s https://api.github.com/repos/$XRAY_REPO/releases/latest | jq -r .tag_name)
-    if [[ -z "$LATEST_VER" || "$LATEST_VER" == "null" ]]; then
-        log_err "无法获取 Xray 版本，请检查网络" && exit 1
-    fi
-    
-    log_info "检测到最新版本: $LATEST_VER，开始下载..."
-    
     ARCH=$(uname -m)
     case $ARCH in
         x86_64) DOWNLOAD_ARCH="64" ;;
         aarch64) DOWNLOAD_ARCH="arm64-v8a" ;;
-        *) log_err "不支持的架构: $ARCH" && exit 1 ;;
+        *) log_err "架构不支持" && exit 1 ;;
     esac
-
-    DOWNLOAD_URL="https://github.com/$XRAY_REPO/releases/download/$LATEST_VER/Xray-linux-${DOWNLOAD_ARCH}.zip"
     
     mkdir -p "$INSTALL_DIR"
-    wget -O "$INSTALL_DIR/xray.zip" "$DOWNLOAD_URL"
-    
-    if [ $? -ne 0 ]; then
-        log_err "下载失败" && exit 1
-    fi
-
-    unzip -q -o "$INSTALL_DIR/xray.zip" -d "$INSTALL_DIR"
+    wget -O xray.zip "https://github.com/$XRAY_REPO/releases/download/$LATEST_VER/Xray-linux-${DOWNLOAD_ARCH}.zip"
+    unzip -q -o xray.zip -d "$INSTALL_DIR" && rm xray.zip
     chmod +x "$XRAY_BIN"
-    rm "$INSTALL_DIR/xray.zip"
-    
-    log_info "Xray 内核安装完成"
 }
 
-# --- 4. 生成配置 (修复：去除换行符) ---
+# --- 6. 生成配置 (VMess 修改版) ---
 generate_config() {
-    log_info "正在生成配置文件..."
+    local domain=$1
+    log_info "生成 Xray 配置..."
     
-    # 修复重点：添加 tr -d '\n' 去除变量中的换行符，防止链接断裂
+    # 变量准备
     UUID=$(uuidgen | tr -d '\n')
     KEYS=$($XRAY_BIN x25519)
-    PRIVATE_KEY=$(echo "$KEYS" | grep "Private" | awk '{print $3}' | tr -d '\n')
-    PUBLIC_KEY=$(echo "$KEYS" | grep "Public" | awk '{print $3}' | tr -d '\n')
-    SHORT_ID=$(openssl rand -hex 4 | tr -d '\n')
+    PRI_KEY=$(echo "$KEYS" | grep "Private" | awk '{print $3}' | tr -d '\n')
+    PUB_KEY=$(echo "$KEYS" | grep "Public" | awk '{print $3}' | tr -d '\n')
+    SID=$(openssl rand -hex 4 | tr -d '\n')
 
     cat > "$CONFIG_FILE" <<EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
+  "log": { "loglevel": "warning" },
   "inbounds": [
     {
-      "port": 443,
+      "tag": "reality_in",
+      "port": $PORT_REALITY,
       "protocol": "vless",
       "settings": {
-        "clients": [
-          {
-            "id": "$UUID",
-            "flow": "xtls-rprx-vision"
-          }
-        ],
+        "clients": [{ "id": "$UUID", "flow": "xtls-rprx-vision" }],
         "decryption": "none"
       },
       "streamSettings": {
@@ -139,57 +187,51 @@ generate_config() {
           "show": false,
           "dest": "$DEST_SITE",
           "xver": 0,
-          "serverNames": [
-            "$DEST_SNI"
-          ],
-          "privateKey": "$PRIVATE_KEY",
-          "shortIds": [
-            "$SHORT_ID"
-          ],
+          "serverNames": ["$DEST_SNI"],
+          "privateKey": "$PRI_KEY",
+          "shortIds": ["$SID"],
           "fingerprint": "chrome"
         }
       },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls"]
+      "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
+    },
+    {
+      "tag": "vmess_in",
+      "listen": "127.0.0.1",
+      "port": $PORT_WS_LOCAL,
+      "protocol": "vmess", 
+      "settings": {
+        "clients": [{ "id": "$UUID", "alterId": 0 }]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/eljefe" }
       }
     }
   ],
   "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    },
-    {
-      "protocol": "blackhole",
-      "tag": "block"
-    }
+    { "protocol": "freedom", "tag": "direct" },
+    { "protocol": "blackhole", "tag": "block" }
   ]
 }
 EOF
-    # 保存信息
-    echo "UUID=$UUID" > "$INSTALL_DIR/user_info.txt"
-    echo "PUBLIC_KEY=$PUBLIC_KEY" >> "$INSTALL_DIR/user_info.txt"
-    echo "SHORT_ID=$SHORT_ID" >> "$INSTALL_DIR/user_info.txt"
-    echo "SNI=$DEST_SNI" >> "$INSTALL_DIR/user_info.txt"
+    echo "UUID=$UUID" > "$INSTALL_DIR/info.txt"
+    echo "PUB_KEY=$PUB_KEY" >> "$INSTALL_DIR/info.txt"
+    echo "SID=$SID" >> "$INSTALL_DIR/info.txt"
+    echo "DOMAIN=$domain" >> "$INSTALL_DIR/info.txt"
 }
 
-# --- 5. 系统服务配置 ---
+# --- 7. 服务 ---
 setup_service() {
     cat > /etc/systemd/system/eljefe-v2.service <<EOF
 [Unit]
-Description=ElJefe-V2 Service
-Documentation=https://github.com/XTLS/Xray-core
-After=network.target nss-lookup.target
+Description=ElJefe-V2
+After=network.target
 
 [Service]
 User=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
 ExecStart=$XRAY_BIN run -config $CONFIG_FILE
 Restart=on-failure
-RestartPreventExitStatus=23
 
 [Install]
 WantedBy=multi-user.target
@@ -199,102 +241,84 @@ EOF
     systemctl restart eljefe-v2
 }
 
-# --- 6. 输出客户端连接信息 ---
+# --- 8. 信息展示 (含 VMess Base64) ---
 show_info() {
-    if [ ! -f "$INSTALL_DIR/user_info.txt" ]; then
-        log_err "未找到配置文件，请先安装" && return
-    fi
-    
-    source "$INSTALL_DIR/user_info.txt"
-    # 再次确保去除换行符
+    [ ! -f "$INSTALL_DIR/info.txt" ] && return
+    source "$INSTALL_DIR/info.txt"
     IP=$(curl -s4 https://api.ipify.org | tr -d '\n')
     UUID=$(echo $UUID | tr -d '\n')
-    PUBLIC_KEY=$(echo $PUBLIC_KEY | tr -d '\n')
-    SHORT_ID=$(echo $SHORT_ID | tr -d '\n')
+    PUB_KEY=$(echo $PUB_KEY | tr -d '\n')
+    SID=$(echo $SID | tr -d '\n')
+    DOMAIN=$(echo $DOMAIN | tr -d '\n')
+
+    # 1. Reality Link
+    LINK_REALITY="vless://${UUID}@${IP}:443?security=reality&encryption=none&pbk=${PUB_KEY}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${DEST_SNI}&sid=${SID}#ElJefe_Reality"
     
-    # 构造 VLESS 链接 (标准 Reality 格式)
-    # 注意参数顺序和紧凑性
-    LINK="vless://${UUID}@${IP}:443?security=reality&encryption=none&pbk=${PUBLIC_KEY}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${SNI}&sid=${SHORT_ID}#ElJefe_V2_Node"
-    
+    # 2. VMess Link
+    if [[ -n "$DOMAIN" ]]; then
+        # 构造 VMess JSON
+        VMESS_JSON="{\"v\":\"2\",\"ps\":\"ElJefe_VMess_CDN\",\"add\":\"${DOMAIN}\",\"port\":\"${PORT_TLS}\",\"id\":\"${UUID}\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${DOMAIN}\",\"path\":\"/eljefe\",\"tls\":\"tls\",\"sni\":\"${DOMAIN}\"}"
+        # Base64 编码
+        VMESS_B64=$(echo -n "$VMESS_JSON" | base64 | tr -d '\n')
+        LINK_VMESS="vmess://$VMESS_B64"
+    fi
+
     echo ""
-    echo -e "${BLUE}========================================${PLAIN}"
-    echo -e "${GREEN}      ElJefe-V2 部署成功 / 信息面板${PLAIN}"
-    echo -e "${BLUE}========================================${PLAIN}"
-    echo -e "地址 (Address): ${PLAIN}$IP"
-    echo -e "端口 (Port)   : ${PLAIN}443"
-    echo -e "用户ID (UUID) : ${PLAIN}$UUID"
-    echo -e "流控 (Flow)   : ${PLAIN}xtls-rprx-vision"
-    echo -e "加密 (Sec)    : ${PLAIN}reality"
-    echo -e "伪装域名 (SNI): ${PLAIN}$SNI"
-    echo -e "公钥 (Public K):${PLAIN}$PUBLIC_KEY"
-    echo -e "${BLUE}----------------------------------------${PLAIN}"
-    echo -e "通用导入链接 (VLESS):"
-    echo -e "${YELLOW}$LINK${PLAIN}"
-    echo -e "${BLUE}========================================${PLAIN}"
+    echo -e "${BLUE}=== ElJefe-V2 安装完成 ===${PLAIN}"
+    echo -e "${YELLOW}[主通道] Reality (直连高速)${PLAIN}"
+    echo -e "链接: ${GREEN}$LINK_REALITY${PLAIN}"
+    echo ""
+    if [[ -n "$DOMAIN" ]]; then
+        echo -e "${YELLOW}[备用通道] VMess-WS-TLS (CDN兼容)${PLAIN}"
+        echo -e "域名: $DOMAIN (端口 $PORT_TLS)"
+        echo -e "链接: ${GREEN}$LINK_VMESS${PLAIN}"
+    else
+        echo -e "${RED}[提示] 未配置域名，备用通道不可用。${PLAIN}"
+    fi
     echo ""
 }
 
-# --- 菜单逻辑 ---
-menu() {
-    clear
-    echo -e "  ${GREEN}ElJefe-V2 自用管理脚本${PLAIN} ${YELLOW}[v1.1 - Fixed]${PLAIN}"
-    echo -e "  -----------------------------------"
-    echo -e "  ${GREEN}1.${PLAIN} 全新安装 (Install)"
-    echo -e "  ${GREEN}2.${PLAIN} 更新内核 (Update Core)"
-    echo -e "  ${GREEN}3.${PLAIN} 查看配置 (Show Info)"
-    echo -e "  ${GREEN}4.${PLAIN} 重启服务 (Restart)"
-    echo -e "  ${GREEN}5.${PLAIN} 卸载脚本 (Uninstall)"
-    echo -e "  ${GREEN}0.${PLAIN} 退出脚本 (Exit)"
-    echo -e ""
-    read -p "  请输入选项 [0-5]: " num
-
-    case "$num" in
-        1)
-            check_root
-            install_dependencies
-            install_xray
-            setup_fake_site
-            generate_config
-            setup_service
-            show_info
-            ;;
-        2)
-            check_root
-            install_xray
-            systemctl restart eljefe-v2
-            log_info "内核更新完成"
-            ;;
-        3)
-            show_info
-            ;;
-        4)
-            systemctl restart eljefe-v2
-            log_info "服务已重启"
-            ;;
-        5)
-            systemctl stop eljefe-v2
-            systemctl disable eljefe-v2
-            rm /etc/systemd/system/eljefe-v2.service
-            rm -rf "$INSTALL_DIR"
-            systemctl daemon-reload
-            log_info "卸载完成"
-            ;;
-        0)
-            exit 0
-            ;;
-        *)
-            log_err "请输入正确数字"
-            ;;
-    esac
+# --- 菜单 ---
+main_install() {
+    check_root
+    install_dependencies
+    install_xray
+    setup_fake_site
+    
+    echo ""
+    echo -e "${YELLOW}是否拥有域名并配置 VMess-WS-TLS？${PLAIN}"
+    echo -e "1. 是 (我已解析域名)"
+    echo -e "2. 否 (仅 Reality)"
+    read -p "请选择: " choice
+    
+    if [[ "$choice" == "1" ]]; then
+        read -p "请输入域名: " my_domain
+        setup_cert "$my_domain"
+        if [ $? -eq 0 ]; then
+            setup_nginx "$my_domain"
+            generate_config "$my_domain"
+        else
+            log_warn "证书失败，仅安装 Reality"
+            setup_nginx ""
+            generate_config ""
+        fi
+    else
+        setup_nginx ""
+        generate_config ""
+    fi
+    
+    setup_service
+    show_info
 }
 
-if [[ $# > 0 ]]; then
-    case $1 in
-        "install") menu 1 ;;
-        "update") menu 2 ;;
-        "info") menu 3 ;;
-        *) menu ;;
-    esac
-else
-    menu
-fi
+case $1 in
+    "install") main_install ;;
+    "info") show_info ;;
+    *) 
+        echo "1. Install"
+        echo "2. Show Info"
+        read -p "Select: " opt
+        [[ "$opt" == "1" ]] && main_install
+        [[ "$opt" == "2" ]] && show_info
+        ;;
+esac
