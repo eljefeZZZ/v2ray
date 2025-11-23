@@ -3,3 +3,134 @@ v2ray一键部署 一键脚本
 ```
 wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh && sed -i 's/\r$//' setup.sh && chmod +x setup.sh && ./setup.sh
 ```
+
+# ElJefe-V2 Manager
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Xray-Core-blue?style=for-the-badge&logo=protect" alt="Xray Core">
+  <img src="https://img.shields.io/badge/Protocol-VLESS%20%2B%20Reality-success?style=for-the-badge" alt="Protocol">
+  <img src="https://img.shields.io/badge/Security-High-red?style=for-the-badge&logo=security" alt="Security">
+  <img src="https://img.shields.io/badge/Platform-Linux-lightgrey?style=for-the-badge&logo=linux" alt="Platform">
+</p>
+
+<p align="center">
+  <strong>🚀 一款现代、安全、模块化的 Xray + Nginx 自动化管理脚本</strong>
+  <br>
+  专为追求极致速度与隐蔽性的极客打造。
+</p>
+
+---
+
+## ✨ 核心特性 (Features)
+
+- **🔒 极致隐蔽 (Stealth Mode)**
+  - **主通道**: 采用最先进的 `VLESS-Reality` 协议，无域名、无证书，流量特征完美伪装成 Microsoft/Apple。
+  - **智能伪装**: 自动部署真实的静态简历/博客网站，探测者访问你的 IP 只会看到一个普通的英文个人主页。
+
+- **🛡️ 双重保险 (Dual Protocol)**
+  - **主线路**: VLESS-Reality (TCP-Vision) -> 直连速度最快，低延迟。
+  - **备用线路**: VMess-WS-TLS -> 专为 **CDN** 设计。当 IP 被墙时，可配合 Cloudflare 复活。
+
+- **📦 模块化架构 (Modular Design)**
+  - 所有的核心组件（Xray 内核、证书、配置文件）统一安装在 `/usr/local/eljefe-v2`，不污染系统目录。
+  - 即使重装系统，也只需备份这一个文件夹即可保留所有配置。
+
+- **🛠️ 自动化运维 (Auto Ops)**
+  - **自动修复依赖**: 智能检测并解决 `socat`、`nginx` 等安装失败问题（兼容老旧 Debian 9 系统）。
+  - **自动证书管理**: 内置 `acme.sh`，自动申请、续期 SSL 证书，无需人工干预。
+  - **一键管理**: 提供全功能菜单，支持更新内核、修改伪装 SNI、查看分享链接等。
+
+---
+
+## 🚀 快速开始 (Quick Start)
+
+### 1. 一键安装
+在你的 VPS 终端执行以下命令：
+
+```
+wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh && sed -i 's/\r$//' setup.sh && chmod +x setup.sh && ./setup.sh install
+```
+
+### 2. 交互式菜单
+安装完成后，你可以随时通过脚本进入管理面板：
+
+```
+./setup.sh
+```
+
+你会看到如下界面：
+```
+  ElJefe-V2 管理面板 [v9.1 Final]
+----------------------------------
+  1. 全新安装 (Install)
+  2. 查看链接 (Show Info)
+  3. 添加/修改域名 (Add Domain)
+  4. 修改伪装 SNI (Change SNI)
+  5. 更新内核 (Update Core)
+  6. 重启服务 (Restart)
+  7. 卸载脚本 (Uninstall)
+  0. 退出 (Exit)
+----------------------------------
+```
+
+---
+
+## 📡 客户端配置 (Client Setup)
+
+脚本会自动生成两种链接，直接复制导入即可：
+
+### ✅ 主通道 (推荐日常使用)
+- **协议**: VLESS
+- **传输**: TCP + Reality
+- **特点**: 速度快，无指纹，抗封锁能力强。
+
+### 🔄 备用通道 (救急专用)
+- **协议**: VMess
+- **传输**: WebSocket + TLS
+- **特点**: 兼容性好，支持 Cloudflare CDN。
+- **启用条件**: 需要在菜单中选择 **"3. 添加域名"** 并配置解析。
+
+---
+
+## 📂 目录结构 (File Structure)
+
+安装后的所有文件均位于 `/usr/local/eljefe-v2`：
+
+```
+/usr/local/eljefe-v2/
+├── xray             # Xray 核心二进制文件
+├── config.json      # 核心配置文件
+├── cert/            # SSL 证书存放目录 (private.key, fullchain.cer)
+├── acme.sh/         # acme.sh 证书申请工具
+├── html/            # 伪装网站源码 (自动下载的简历模板)
+└── info.txt         # 用户配置信息备份 (UUID, Keys)
+```
+
+---
+
+## ❓ 常见问题 (FAQ)
+
+**Q: 安装时提示 socat 失败怎么办？**  
+A: 脚本内置了“救急模式”，会自动从 GitHub 下载静态编译的 `socat` 二进制文件，无需手动处理。
+
+**Q: 备用通道无法连接？**  
+A: 请确保你的域名已经解析到 VPS 的 IP，并且如果是 Cloudflare 用户，申请证书时请先将云朵点灰 (DNS Only)。
+
+**Q: 如何修改伪装的偷取目标 (SNI)？**  
+A: 运行 `./setup.sh` -> 选择 **4. 修改伪装 SNI** -> 输入你想伪装的域名（如 `www.apple.com`）。
+
+---
+
+## ⚠️ 免责声明 (Disclaimer)
+
+本项目仅供网络技术研究与学习交流使用，请勿用于任何非法用途。使用者在使用过程中产生的一切后果由使用者自行承担。
+
+---
+
+<p align="center">
+  Made with ❤️ by <a href="https://github.com/eljefeZZZ">eljefeZZZ</a>
+</p>
+```
+[8](https://gitee.com/zhangjrTemp/Best_README_template?skip_mobile=true)
+[9](https://github.com/eryajf/awesome-github-profile-readme-chinese)
+[10](https://github.com/matiassingers/awesome-readme)
