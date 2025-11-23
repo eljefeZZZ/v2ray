@@ -15,7 +15,7 @@ wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh
 <p align="center">
   <strong>🚀 一款现代、安全、模块化的 Xray + Nginx 自动化管理脚本</strong>
   <br>
-  专为追求极致速度与隐蔽性的极客打造。
+  专为追求极致速度与隐蔽性的小白打造。
 </p>
 
 ---
