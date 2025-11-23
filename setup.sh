@@ -3,17 +3,18 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: Full Featured (Old VMess Format Fix)
+# Description: v9.0 (Add Domain Feature Added)
 # ==================================================
 
-# --- 核心参数 ---
-XRAY_REPO="XTLS/Xray-core"
-INSTALL_DIR="/usr/local/eljefe-v2"
-XRAY_BIN="$INSTALL_DIR/xray"
-CONFIG_FILE="$INSTALL_DIR/config.json"
-WEB_DIR="/var/www/html/camouflag"
-ACME_SH="$INSTALL_DIR/acme.sh/acme.sh"
+# --- 目录结构 ---
+ROOT_DIR="/usr/local/eljefe-v2"
+XRAY_BIN="$ROOT_DIR/xray"
+CONFIG_FILE="$ROOT_DIR/config.json"
+ACME_DIR="$ROOT_DIR/acme.sh"
+CERT_DIR="$ROOT_DIR/cert"
+WEB_DIR="$ROOT_DIR/html"
 
+ACME_SCRIPT="$ACME_DIR/acme.sh"
 DEST_SITE="www.microsoft.com:443"
 DEST_SNI="www.microsoft.com"
 PORT_REALITY=443
@@ -35,47 +36,42 @@ check_root() {
     [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行" && exit 1
 }
 
-# --- 依赖安装 ---
+# --- 核心逻辑 ---
 install_dependencies() {
-    log_info "更新系统源并安装依赖..."
+    log_info "安装依赖..."
     if [ -f /etc/debian_version ]; then
         apt-get update -y
         apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat
-        if ! command -v socat &> /dev/null; then
-            apt-get update --fix-missing && apt-get install -y socat
-        fi
     elif [ -f /etc/redhat-release ]; then
-        yum update -y && yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof
-        if ! command -v socat &> /dev/null; then
-            yum install -y epel-release && yum install -y socat
-        fi
+        yum update -y
+        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof
     else
         log_err "不支持的系统" && exit 1
     fi
     
-    if ! command -v socat &> /dev/null; then
-        log_err "socat 安装失败，脚本无法继续。" && exit 1
-    fi
+    mkdir -p "$ROOT_DIR"
+    mkdir -p "$CERT_DIR"
+    mkdir -p "$WEB_DIR"
     systemctl stop nginx
 }
 
 setup_fake_site() {
     log_info "部署伪装站点..."
-    mkdir -p "$WEB_DIR"
     if [ ! -f "$WEB_DIR/index.html" ]; then
-        wget -qO web.zip "https://github.com/startbootstrap/startbootstrap-resume/archive/gh-pages.zip"
-        unzip -q -o web.zip -d temp_web
-        mv temp_web/startbootstrap-resume-gh-pages/* "$WEB_DIR/"
-        rm -rf web.zip temp_web
+        wget -qO "$ROOT_DIR/web.zip" "https://github.com/startbootstrap/startbootstrap-resume/archive/gh-pages.zip"
+        unzip -q -o "$ROOT_DIR/web.zip" -d "$ROOT_DIR/temp_web"
+        mv "$ROOT_DIR/temp_web/startbootstrap-resume-gh-pages/"* "$WEB_DIR/"
+        rm -rf "$ROOT_DIR/web.zip" "$ROOT_DIR/temp_web"
         chown -R www-data:www-data "$WEB_DIR" 2>/dev/null || chown -R nginx:nginx "$WEB_DIR"
+        chmod -R 755 "$WEB_DIR"
     fi
 }
 
 setup_cert() {
     local domain=$1
     log_info "正在为域名 $domain 申请证书..."
-    mkdir -p "$INSTALL_DIR/acme.sh"
-    curl https://get.acme.sh | sh -s email=admin@eljefe.com --home "$INSTALL_DIR/acme.sh"
+    mkdir -p "$ACME_DIR"
+    curl https://get.acme.sh | sh -s email=admin@eljefe.com --home "$ACME_DIR"
     
     log_info "释放 80 端口..."
     systemctl stop nginx
@@ -83,18 +79,17 @@ setup_cert() {
         kill -9 $(lsof -t -i:80)
     fi
     
-    "$ACME_SH" --issue -d "$domain" --standalone --keylength ec-256 --force
+    "$ACME_SCRIPT" --issue -d "$domain" --standalone --keylength ec-256 --force
     
     if [ $? -eq 0 ]; then
         log_info "证书申请成功！"
-        mkdir -p "$INSTALL_DIR/cert"
-        "$ACME_SH" --install-cert -d "$domain" --ecc \
-            --key-file       "$INSTALL_DIR/cert/private.key" \
-            --fullchain-file "$INSTALL_DIR/cert/fullchain.cer" \
+        "$ACME_SCRIPT" --install-cert -d "$domain" --ecc \
+            --key-file       "$CERT_DIR/private.key" \
+            --fullchain-file "$CERT_DIR/fullchain.cer" \
             --reloadcmd     "systemctl restart nginx"
         return 0
     else
-        log_err "证书申请失败！"
+        log_err "证书申请失败！请检查域名解析。"
         return 1
     fi
 }
@@ -119,8 +114,8 @@ server {
     listen $PORT_TLS ssl http2;
     server_name $domain;
 
-    ssl_certificate       $INSTALL_DIR/cert/fullchain.cer;
-    ssl_certificate_key   $INSTALL_DIR/cert/private.key;
+    ssl_certificate       $CERT_DIR/fullchain.cer;
+    ssl_certificate_key   $CERT_DIR/private.key;
     ssl_protocols         TLSv1.2 TLSv1.3;
     ssl_ciphers           HIGH:!aNULL:!MD5;
 
@@ -142,23 +137,19 @@ server {
     }
 }
 EOF
+    else
+        rm -f /etc/nginx/conf.d/eljefe_tls.conf
     fi
     systemctl restart nginx
 }
 
 install_xray() {
     log_info "安装 Xray..."
+    XRAY_REPO="XTLS/Xray-core"
     LATEST_VER=$(curl -s https://api.github.com/repos/$XRAY_REPO/releases/latest | jq -r .tag_name)
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64) DOWNLOAD_ARCH="64" ;;
-        aarch64) DOWNLOAD_ARCH="arm64-v8a" ;;
-        *) log_err "架构不支持" && exit 1 ;;
-    esac
     
-    mkdir -p "$INSTALL_DIR"
-    wget -O xray.zip "https://github.com/$XRAY_REPO/releases/download/$LATEST_VER/Xray-linux-${DOWNLOAD_ARCH}.zip"
-    unzip -q -o xray.zip -d "$INSTALL_DIR" && rm xray.zip
+    wget -O "$ROOT_DIR/xray.zip" "https://github.com/$XRAY_REPO/releases/download/$LATEST_VER/Xray-linux-64.zip"
+    unzip -q -o "$ROOT_DIR/xray.zip" -d "$ROOT_DIR" && rm "$ROOT_DIR/xray.zip"
     chmod +x "$XRAY_BIN"
 }
 
@@ -222,11 +213,11 @@ generate_config() {
   ]
 }
 EOF
-    echo "UUID=$UUID" > "$INSTALL_DIR/info.txt"
-    echo "PUB_KEY=$PUB_KEY" >> "$INSTALL_DIR/info.txt"
-    echo "SID=$SID" >> "$INSTALL_DIR/info.txt"
-    echo "DOMAIN=$domain" >> "$INSTALL_DIR/info.txt"
-    echo "SNI=$sni" >> "$INSTALL_DIR/info.txt"
+    echo "UUID=$UUID" > "$ROOT_DIR/info.txt"
+    echo "PUB_KEY=$PUB_KEY" >> "$ROOT_DIR/info.txt"
+    echo "SID=$SID" >> "$ROOT_DIR/info.txt"
+    echo "DOMAIN=$domain" >> "$ROOT_DIR/info.txt"
+    echo "SNI=$sni" >> "$ROOT_DIR/info.txt"
 }
 
 setup_service() {
@@ -248,10 +239,9 @@ EOF
     systemctl restart eljefe-v2
 }
 
-# --- 链接生成模块 (兼容性终极修复) ---
 show_info() {
-    [ ! -f "$INSTALL_DIR/info.txt" ] && log_err "未找到配置" && return
-    source "$INSTALL_DIR/info.txt"
+    [ ! -f "$ROOT_DIR/info.txt" ] && log_err "未找到配置" && return
+    source "$ROOT_DIR/info.txt"
     IP=$(curl -s4 https://api.ipify.org | tr -d '\n')
     UUID=$(echo $UUID | tr -d '\n')
     PUB_KEY=$(echo $PUB_KEY | tr -d '\n')
@@ -260,20 +250,12 @@ show_info() {
     SNI=$(echo $SNI | tr -d '\n')
     [[ -z "$SNI" ]] && SNI="$DEST_SNI"
 
-    # 1. Reality Link (标准化)
     LINK_REALITY="vless://${UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUB_KEY}&sid=${SID}&type=tcp&headerType=none#ElJefe_Reality"
     
-    # 2. VMess Link (仿旧版格式 - 参数拼接型)
     if [[ -n "$DOMAIN" ]]; then
-        # 构造核心认证信息: auto:UUID@Host:Port
         VMESS_BASE="auto:${UUID}@${DOMAIN}:${PORT_TLS}"
-        # Base64 编码核心部分
         VMESS_BASE_B64=$(echo -n "$VMESS_BASE" | base64 -w 0)
-        
-        # 拼接 URL 参数
-        # 这里的 path, tls, peer, obfs 等参数完全模仿你提供的样本
         PARAMS="path=/eljefe&remarks=ElJefe_VMess_CDN&obfsParam=${DOMAIN}&obfs=websocket&tls=1&peer=${DOMAIN}&alterId=0"
-        
         LINK_VMESS="vmess://${VMESS_BASE_B64}?${PARAMS}"
     fi
 
@@ -283,7 +265,7 @@ show_info() {
     echo -e "${GREEN}$LINK_REALITY${PLAIN}"
     echo ""
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "${YELLOW}[备用通道] VMess-WS-TLS (兼容格式)${PLAIN}"
+        echo -e "${YELLOW}[备用通道] VMess-WS-TLS${PLAIN}"
         echo -e "${GREEN}$LINK_VMESS${PLAIN}"
     else
         echo -e "${RED}[备用通道] 未配置域名${PLAIN}"
@@ -294,10 +276,30 @@ show_info() {
 change_sni() {
     read -p "请输入新的偷取目标 (例如 www.apple.com): " new_sni
     [[ -z "$new_sni" ]] && return
-    source "$INSTALL_DIR/info.txt"
+    source "$ROOT_DIR/info.txt"
     generate_config "$DOMAIN" "$new_sni"
     systemctl restart eljefe-v2
     show_info
+}
+
+# --- 新增功能: 添加/修改域名 ---
+add_domain() {
+    log_warn "此操作将重新申请证书并覆盖当前配置。"
+    read -p "请输入你的域名 (例如 v2.example.com): " new_domain
+    [[ -z "$new_domain" ]] && return
+    
+    source "$ROOT_DIR/info.txt" # 读取旧 SNI 配置
+    
+    setup_cert "$new_domain"
+    if [ $? -eq 0 ]; then
+        setup_nginx "$new_domain"
+        generate_config "$new_domain" "$SNI"
+        systemctl restart eljefe-v2
+        log_info "域名添加成功！"
+        show_info
+    else
+        log_err "证书申请失败，保留原有配置。"
+    fi
 }
 
 update_core() {
@@ -313,22 +315,24 @@ uninstall_all() {
     systemctl stop eljefe-v2
     systemctl disable eljefe-v2
     rm /etc/systemd/system/eljefe-v2.service
-    rm -rf "$INSTALL_DIR"
     rm -f /etc/nginx/conf.d/eljefe_*.conf
+    rm -rf "$ROOT_DIR"
     systemctl restart nginx
+    systemctl daemon-reload
     log_info "卸载完成！"
 }
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v5.0 Final]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v9.0 Final]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装 (Install)"
     echo -e "  ${GREEN}2.${PLAIN} 查看链接 (Show Info)"
-    echo -e "  ${GREEN}3.${PLAIN} 更新内核 (Update Core)"
+    echo -e "  ${GREEN}3.${PLAIN} 添加/修改域名 (Add Domain)"
     echo -e "  ${GREEN}4.${PLAIN} 修改伪装 SNI (Change SNI)"
-    echo -e "  ${GREEN}5.${PLAIN} 重启服务 (Restart)"
-    echo -e "  ${GREEN}6.${PLAIN} 卸载脚本 (Uninstall)"
+    echo -e "  ${GREEN}5.${PLAIN} 更新内核 (Update Core)"
+    echo -e "  ${GREEN}6.${PLAIN} 重启服务 (Restart)"
+    echo -e "  ${GREEN}7.${PLAIN} 卸载脚本 (Uninstall)"
     echo -e "  ${GREEN}0.${PLAIN} 退出 (Exit)"
     echo -e "----------------------------------"
     read -p "请输入选项: " num
@@ -363,10 +367,11 @@ menu() {
             show_info
             ;;
         2) show_info ;;
-        3) update_core ;;
+        3) add_domain ;;
         4) change_sni ;;
-        5) systemctl restart eljefe-v2 && log_info "服务已重启" ;;
-        6) uninstall_all ;;
+        5) update_core ;;
+        6) systemctl restart eljefe-v2 && log_info "服务已重启" ;;
+        7) uninstall_all ;;
         0) exit 0 ;;
         *) log_err "无效选项" ;;
     esac
