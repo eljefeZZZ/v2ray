@@ -3,18 +3,6 @@ v2ray一键部署脚本，你所看到的一切均由Gmini3 Pro编写
 ```
 wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh && sed -i 's/\r$//' setup.sh && chmod +x setup.sh && ./setup.sh
 ```
-太好了，既然我们要将安装使用步骤也整合进 README，那我们就打造一个 **“傻瓜式但很极客”** 的完整项目文档。
-
-这个文档会分为：
-1.  **炫酷的头部** (Logo + Badges)
-2.  **核心卖点** (Feature)
-3.  **一键起飞** (Install)
-4.  **详细食用指南** (Usage Guide)
-5.  **维护手册** (Maintenance)
-
-请直接复制下面的代码，保存为你的 `README.md`。
-
-```markdown
 # ElJefe-V2 Manager
 
 <p align="center">
