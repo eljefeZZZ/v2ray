@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: Full Featured Manager (Reality + VMess)
+# Description: Full Featured (Socat Fix + Force Install)
 # ==================================================
 
 # --- 核心参数 ---
@@ -14,7 +14,6 @@ CONFIG_FILE="$INSTALL_DIR/config.json"
 WEB_DIR="/var/www/html/camouflag"
 ACME_SH="$INSTALL_DIR/acme.sh/acme.sh"
 
-# 默认参数
 DEST_SITE="www.microsoft.com:443"
 DEST_SNI="www.microsoft.com"
 PORT_REALITY=443
@@ -36,16 +35,45 @@ check_root() {
     [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行" && exit 1
 }
 
-# --- 基础功能模块 ---
+# --- 强力依赖安装 (修复 socat 问题) ---
 install_dependencies() {
-    log_info "安装系统依赖..."
+    log_info "更新系统源并安装依赖..."
+    
     if [ -f /etc/debian_version ]; then
-        apt-get update -y && apt-get install -y curl wget unzip jq nginx uuid-runtime socat openssl cron lsof
+        # Debian/Ubuntu
+        apt-get update -y
+        # 尝试安装核心工具
+        apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat
+        
+        # 二次检查 socat 是否存在
+        if ! command -v socat &> /dev/null; then
+            log_warn "检测到 socat 安装失败，正在尝试强制修复..."
+            apt-get update --fix-missing
+            apt-get install -y socat
+        fi
+        
     elif [ -f /etc/redhat-release ]; then
-        yum update -y && yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof
+        # CentOS/RHEL
+        yum update -y
+        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof
+        
+        if ! command -v socat &> /dev/null; then
+            log_warn "检测到 socat 安装失败，尝试使用 EPEL 源..."
+            yum install -y epel-release
+            yum install -y socat
+        fi
     else
-        log_err "不支持的系统" && exit 1
+        log_err "不支持的系统，请手动安装 socat 后重试" && exit 1
     fi
+
+    # 最终确认
+    if ! command -v socat &> /dev/null; then
+        log_err "致命错误: socat 安装失败！acme.sh 无法运行。"
+        log_err "请尝试手动运行: apt-get install socat (Debian) 或 yum install socat (CentOS)"
+        exit 1
+    fi
+    
+    log_info "依赖安装完成 (Socat: $(socat -V | head -n1 | awk '{print $2}'))"
     systemctl stop nginx
 }
 
@@ -69,10 +97,13 @@ setup_cert() {
     
     log_info "释放 80 端口..."
     systemctl stop nginx
+    # 暴力杀掉占用 80 端口的进程
     if lsof -i :80 > /dev/null; then
+        log_warn "发现 80 端口被占用，强制清理..."
         kill -9 $(lsof -t -i:80)
     fi
     
+    # 申请证书
     "$ACME_SH" --issue -d "$domain" --standalone --keylength ec-256 --force
     
     if [ $? -eq 0 ]; then
@@ -155,7 +186,7 @@ install_xray() {
 generate_config() {
     local domain=$1
     local sni=$2
-    [[ -z "$sni" ]] && sni="$DEST_SNI" # 如果没指定，用默认
+    [[ -z "$sni" ]] && sni="$DEST_SNI"
     
     log_info "生成 Xray 配置 (SNI: $sni)..."
     
@@ -238,7 +269,6 @@ EOF
     systemctl restart eljefe-v2
 }
 
-# --- 链接生成模块 ---
 show_info() {
     [ ! -f "$INSTALL_DIR/info.txt" ] && log_err "未找到配置，请先安装" && return
     source "$INSTALL_DIR/info.txt"
@@ -250,10 +280,10 @@ show_info() {
     SNI=$(echo $SNI | tr -d '\n')
     [[ -z "$SNI" ]] && SNI="$DEST_SNI"
 
-    # 1. Reality Link (修复版)
+    # Reality Link
     LINK_REALITY="vless://${UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUB_KEY}&sid=${SID}&type=tcp&headerType=none#ElJefe_Reality"
     
-    # 2. VMess Link
+    # VMess Link
     if [[ -n "$DOMAIN" ]]; then
         VMESS_JSON='{"v":"2","ps":"ElJefe_VMess_CDN","add":"'"$DOMAIN"'","port":"'"$PORT_TLS"'","id":"'"$UUID"'","aid":"0","scy":"auto","net":"ws","type":"none","host":"'"$DOMAIN"'","path":"/eljefe","tls":"tls","sni":"'"$DOMAIN"'"}'
         VMESS_B64=$(echo -n "$VMESS_JSON" | base64 -w 0)
@@ -274,12 +304,9 @@ show_info() {
     echo ""
 }
 
-# --- 扩展功能 ---
 change_sni() {
     read -p "请输入新的偷取目标 (例如 www.apple.com): " new_sni
     [[ -z "$new_sni" ]] && return
-    
-    # 读取旧的 domain 信息，防止丢失
     source "$INSTALL_DIR/info.txt"
     generate_config "$DOMAIN" "$new_sni"
     systemctl restart eljefe-v2
@@ -305,10 +332,9 @@ uninstall_all() {
     log_info "卸载完成！"
 }
 
-# --- 主菜单 ---
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v4.0 Final]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v4.1 SocatFix]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装 (Install)"
     echo -e "  ${GREEN}2.${PLAIN} 查看链接 (Show Info)"
@@ -326,13 +352,11 @@ menu() {
             install_dependencies
             install_xray
             setup_fake_site
-            
             echo ""
             echo -e "${YELLOW}是否配置域名 (VMess-WS-TLS)？${PLAIN}"
             echo -e "1. 是"
             echo -e "2. 否"
             read -p "选择: " choice
-            
             if [[ "$choice" == "1" ]]; then
                 read -p "请输入域名: " my_domain
                 setup_cert "$my_domain"
@@ -361,10 +385,9 @@ menu() {
     esac
 }
 
-# 命令行入口
 if [[ $# > 0 ]]; then
     case $1 in
-        "install") menu ;; # 偷懒处理，带参数也进菜单，或者你可以自己写逻辑
+        "install") menu ;;
         "info") show_info ;;
         *) menu ;;
     esac
