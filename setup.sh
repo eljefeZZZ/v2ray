@@ -12,7 +12,7 @@ INSTALL_DIR="/usr/local/eljefe-v2"
 XRAY_BIN="$INSTALL_DIR/xray"
 CONFIG_FILE="$INSTALL_DIR/config.json"
 WEB_DIR="/var/www/html/camouflag"
-# 伪装用的目标网站 (用于 Reality 偷取证书特征，建议选国外大厂)
+# 伪装用的目标网站
 DEST_SITE="www.microsoft.com:443"
 DEST_SNI="www.microsoft.com"
 
@@ -49,20 +49,14 @@ setup_fake_site() {
     log_info "正在部署伪装站点..."
     mkdir -p "$WEB_DIR"
     
-    # 下载一个简单的 HTML 模板作为伪装
-    # 这里使用一个开源的简历模板，看起来很真实
     if [ ! -f "$WEB_DIR/index.html" ]; then
         wget -qO "$INSTALL_DIR/web.zip" "https://github.com/startbootstrap/startbootstrap-resume/archive/gh-pages.zip"
         unzip -q -o "$INSTALL_DIR/web.zip" -d "$INSTALL_DIR/temp_web"
         mv "$INSTALL_DIR/temp_web/startbootstrap-resume-gh-pages/"* "$WEB_DIR/"
         rm -rf "$INSTALL_DIR/web.zip" "$INSTALL_DIR/temp_web"
-        
-        # 修正权限
         chown -R www-data:www-data "$WEB_DIR" 2>/dev/null || chown -R nginx:nginx "$WEB_DIR"
     fi
 
-    # 配置 Nginx (监听 8080，仅供回落使用，不对外开放)
-    # 注意：这里文件名也修改为了 eljefe_camouflage.conf
     cat > /etc/nginx/conf.d/eljefe_camouflage.conf <<EOF
 server {
     listen 127.0.0.1:8080;
@@ -109,17 +103,16 @@ install_xray() {
     log_info "Xray 内核安装完成"
 }
 
-# --- 4. 生成配置 (核心逻辑) ---
+# --- 4. 生成配置 (修复：去除换行符) ---
 generate_config() {
     log_info "正在生成配置文件..."
     
-    # 生成必要的密钥
-    UUID=$(uuidgen)
-    # 使用 xray 自带命令生成密钥对
+    # 修复重点：添加 tr -d '\n' 去除变量中的换行符，防止链接断裂
+    UUID=$(uuidgen | tr -d '\n')
     KEYS=$($XRAY_BIN x25519)
-    PRIVATE_KEY=$(echo "$KEYS" | grep "Private" | awk '{print $3}')
-    PUBLIC_KEY=$(echo "$KEYS" | grep "Public" | awk '{print $3}')
-    SHORT_ID=$(openssl rand -hex 4)
+    PRIVATE_KEY=$(echo "$KEYS" | grep "Private" | awk '{print $3}' | tr -d '\n')
+    PUBLIC_KEY=$(echo "$KEYS" | grep "Public" | awk '{print $3}' | tr -d '\n')
+    SHORT_ID=$(openssl rand -hex 4 | tr -d '\n')
 
     cat > "$CONFIG_FILE" <<EOF
 {
@@ -174,7 +167,7 @@ generate_config() {
   ]
 }
 EOF
-    # 保存配置信息以便后续查看
+    # 保存信息
     echo "UUID=$UUID" > "$INSTALL_DIR/user_info.txt"
     echo "PUBLIC_KEY=$PUBLIC_KEY" >> "$INSTALL_DIR/user_info.txt"
     echo "SHORT_ID=$SHORT_ID" >> "$INSTALL_DIR/user_info.txt"
@@ -183,7 +176,6 @@ EOF
 
 # --- 5. 系统服务配置 ---
 setup_service() {
-    # 注意：这里服务名修改为 eljefe-v2.service
     cat > /etc/systemd/system/eljefe-v2.service <<EOF
 [Unit]
 Description=ElJefe-V2 Service
@@ -214,10 +206,15 @@ show_info() {
     fi
     
     source "$INSTALL_DIR/user_info.txt"
-    IP=$(curl -s4 https://api.ipify.org)
+    # 再次确保去除换行符
+    IP=$(curl -s4 https://api.ipify.org | tr -d '\n')
+    UUID=$(echo $UUID | tr -d '\n')
+    PUBLIC_KEY=$(echo $PUBLIC_KEY | tr -d '\n')
+    SHORT_ID=$(echo $SHORT_ID | tr -d '\n')
     
-    # 构造 VLESS 链接 (修改备注为 ElJefe_V2_Node)
-    LINK="vless://$UUID@$IP:443?security=reality&encryption=none&pbk=$PUBLIC_KEY&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=$SNI&sid=$SHORT_ID#ElJefe_V2_Node"
+    # 构造 VLESS 链接 (标准 Reality 格式)
+    # 注意参数顺序和紧凑性
+    LINK="vless://${UUID}@${IP}:443?security=reality&encryption=none&pbk=${PUBLIC_KEY}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${SNI}&sid=${SHORT_ID}#ElJefe_V2_Node"
     
     echo ""
     echo -e "${BLUE}========================================${PLAIN}"
@@ -240,7 +237,7 @@ show_info() {
 # --- 菜单逻辑 ---
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 自用管理脚本${PLAIN} ${YELLOW}[v1.0]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 自用管理脚本${PLAIN} ${YELLOW}[v1.1 - Fixed]${PLAIN}"
     echo -e "  -----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装 (Install)"
     echo -e "  ${GREEN}2.${PLAIN} 更新内核 (Update Core)"
@@ -291,9 +288,7 @@ menu() {
     esac
 }
 
-# 入口
 if [[ $# > 0 ]]; then
-    # 支持命令行参数: ./setup.sh install
     case $1 in
         "install") menu 1 ;;
         "update") menu 2 ;;
