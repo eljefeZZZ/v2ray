@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # ==================================================
-# Project: elJefe-V2 Manager
+# Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
 # Description: Secure, modular Xray+Nginx deployment
 # ==================================================
 
 # --- 配置参数 ---
 XRAY_REPO="XTLS/Xray-core"
-INSTALL_DIR="/usr/local/jefe-v2"
+INSTALL_DIR="/usr/local/eljefe-v2"
 XRAY_BIN="$INSTALL_DIR/xray"
 CONFIG_FILE="$INSTALL_DIR/config.json"
 WEB_DIR="/var/www/html/camouflag"
@@ -62,7 +62,8 @@ setup_fake_site() {
     fi
 
     # 配置 Nginx (监听 8080，仅供回落使用，不对外开放)
-    cat > /etc/nginx/conf.d/jefe_camouflage.conf <<EOF
+    # 注意：这里文件名也修改为了 eljefe_camouflage.conf
+    cat > /etc/nginx/conf.d/eljefe_camouflage.conf <<EOF
 server {
     listen 127.0.0.1:8080;
     server_name _;
@@ -182,9 +183,10 @@ EOF
 
 # --- 5. 系统服务配置 ---
 setup_service() {
-    cat > /etc/systemd/system/jefe-v2.service <<EOF
+    # 注意：这里服务名修改为 eljefe-v2.service
+    cat > /etc/systemd/system/eljefe-v2.service <<EOF
 [Unit]
-Description=Jefe-V2 Service
+Description=ElJefe-V2 Service
 Documentation=https://github.com/XTLS/Xray-core
 After=network.target nss-lookup.target
 
@@ -201,8 +203,8 @@ RestartPreventExitStatus=23
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable jefe-v2
-    systemctl restart jefe-v2
+    systemctl enable eljefe-v2
+    systemctl restart eljefe-v2
 }
 
 # --- 6. 输出客户端连接信息 ---
@@ -214,12 +216,12 @@ show_info() {
     source "$INSTALL_DIR/user_info.txt"
     IP=$(curl -s4 https://api.ipify.org)
     
-    # 构造 VLESS 链接
-    LINK="vless://$UUID@$IP:443?security=reality&encryption=none&pbk=$PUBLIC_KEY&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=$SNI&sid=$SHORT_ID#Jefe_V2_Node"
+    # 构造 VLESS 链接 (修改备注为 ElJefe_V2_Node)
+    LINK="vless://$UUID@$IP:443?security=reality&encryption=none&pbk=$PUBLIC_KEY&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=$SNI&sid=$SHORT_ID#ElJefe_V2_Node"
     
     echo ""
     echo -e "${BLUE}========================================${PLAIN}"
-    echo -e "${GREEN}       Jefe-V2 部署成功 / 信息面板${PLAIN}"
+    echo -e "${GREEN}      ElJefe-V2 部署成功 / 信息面板${PLAIN}"
     echo -e "${BLUE}========================================${PLAIN}"
     echo -e "地址 (Address): ${PLAIN}$IP"
     echo -e "端口 (Port)   : ${PLAIN}443"
@@ -238,7 +240,7 @@ show_info() {
 # --- 菜单逻辑 ---
 menu() {
     clear
-    echo -e "  ${GREEN}elJefe-V2 自用管理脚本${PLAIN} ${YELLOW}[v1.0]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 自用管理脚本${PLAIN} ${YELLOW}[v1.0]${PLAIN}"
     echo -e "  -----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装 (Install)"
     echo -e "  ${GREEN}2.${PLAIN} 更新内核 (Update Core)"
@@ -262,20 +264,20 @@ menu() {
         2)
             check_root
             install_xray
-            systemctl restart jefe-v2
+            systemctl restart eljefe-v2
             log_info "内核更新完成"
             ;;
         3)
             show_info
             ;;
         4)
-            systemctl restart jefe-v2
+            systemctl restart eljefe-v2
             log_info "服务已重启"
             ;;
         5)
-            systemctl stop jefe-v2
-            systemctl disable jefe-v2
-            rm /etc/systemd/system/jefe-v2.service
+            systemctl stop eljefe-v2
+            systemctl disable eljefe-v2
+            rm /etc/systemd/system/eljefe-v2.service
             rm -rf "$INSTALL_DIR"
             systemctl daemon-reload
             log_info "卸载完成"
