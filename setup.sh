@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: v9.1 (Fix Nginx Default Page)
+# Description: v10.0 (Added Clash Meta Config)
 # ==================================================
 
 # --- 目录结构 ---
@@ -97,11 +97,9 @@ setup_nginx() {
     local domain=$1
     log_info "配置 Nginx..."
 
-    # --- 关键修复: 删除默认配置 ---
     rm -f /etc/nginx/sites-enabled/default
     rm -f /etc/nginx/conf.d/default.conf
-    # ---------------------------
-
+    
     cat > /etc/nginx/conf.d/eljefe_fallback.conf <<EOF
 server {
     listen 80;
@@ -265,7 +263,7 @@ show_info() {
 
     echo ""
     echo -e "${BLUE}=== ElJefe-V2 信息面板 ===${PLAIN}"
-    echo -e "${YELLOW}[主通道] Reality${PLAIN}"
+    echo -e "${YELLOW}[主通道] Reality (直连)${PLAIN}"
     echo -e "${GREEN}$LINK_REALITY${PLAIN}"
     echo ""
     if [[ -n "$DOMAIN" ]]; then
@@ -274,6 +272,40 @@ show_info() {
     else
         echo -e "${RED}[备用通道] 未配置域名${PLAIN}"
     fi
+    echo ""
+}
+
+# --- 新增功能: 显示 Clash Meta 配置 ---
+show_clash() {
+    [ ! -f "$ROOT_DIR/info.txt" ] && log_err "未找到配置" && return
+    source "$ROOT_DIR/info.txt"
+    IP=$(curl -s4 https://api.ipify.org | tr -d '\n')
+    UUID=$(echo $UUID | tr -d '\n')
+    PUB_KEY=$(echo $PUB_KEY | tr -d '\n')
+    SID=$(echo $SID | tr -d '\n')
+    SNI=$(echo $SNI | tr -d '\n')
+    [[ -z "$SNI" ]] && SNI="$DEST_SNI"
+
+    echo ""
+    echo -e "${YELLOW}[Clash Meta (Mihomo) 配置文件段落]${PLAIN}"
+    echo -e "------------------------------------------------"
+    echo -e "proxies:"
+    echo -e "  - name: \"ElJefe-Reality\""
+    echo -e "    type: vless"
+    echo -e "    server: $IP"
+    echo -e "    port: 443"
+    echo -e "    uuid: $UUID"
+    echo -e "    network: tcp"
+    echo -e "    tls: true"
+    echo -e "    udp: true"
+    echo -e "    flow: xtls-rprx-vision"
+    echo -e "    servername: $SNI"
+    echo -e "    reality-opts:"
+    echo -e "      public-key: $PUB_KEY"
+    echo -e "      short-id: $SID"
+    echo -e "    client-fingerprint: chrome"
+    echo -e "------------------------------------------------"
+    echo -e "${BLUE}提示: 请将以上内容复制到你的 Clash Meta 配置文件 (proxies 字段下)${PLAIN}"
     echo ""
 }
 
@@ -287,33 +319,31 @@ change_sni() {
 }
 
 add_domain() {
-    log_warn "此操作将重新申请证书并覆盖当前配置。"
-    read -p "请输入你的域名 (例如 v2.example.com): " new_domain
+    log_warn "重新配置域名..."
+    read -p "请输入域名: " new_domain
     [[ -z "$new_domain" ]] && return
-    
     source "$ROOT_DIR/info.txt"
-    
     setup_cert "$new_domain"
     if [ $? -eq 0 ]; then
         setup_nginx "$new_domain"
         generate_config "$new_domain" "$SNI"
         systemctl restart eljefe-v2
-        log_info "域名添加成功！"
+        log_info "成功！"
         show_info
     else
-        log_err "证书申请失败，保留原有配置。"
+        log_err "失败！"
     fi
 }
 
 update_core() {
-    log_info "正在更新 Xray 内核..."
+    log_info "更新 Xray..."
     install_xray
     systemctl restart eljefe-v2
-    log_info "更新完成！"
+    log_info "完成！"
 }
 
 uninstall_all() {
-    read -p "确定要卸载吗？(y/n): " confirm
+    read -p "确定卸载？(y/n): " confirm
     [[ "$confirm" != "y" ]] && return
     systemctl stop eljefe-v2
     systemctl disable eljefe-v2
@@ -322,21 +352,22 @@ uninstall_all() {
     rm -rf "$ROOT_DIR"
     systemctl restart nginx
     systemctl daemon-reload
-    log_info "卸载完成！"
+    log_info "已卸载"
 }
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v9.1 Nginx Fix]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v10.0 Clash]${PLAIN}"
     echo -e "----------------------------------"
-    echo -e "  ${GREEN}1.${PLAIN} 全新安装 (Install)"
-    echo -e "  ${GREEN}2.${PLAIN} 查看链接 (Show Info)"
-    echo -e "  ${GREEN}3.${PLAIN} 添加/修改域名 (Add Domain)"
-    echo -e "  ${GREEN}4.${PLAIN} 修改伪装 SNI (Change SNI)"
-    echo -e "  ${GREEN}5.${PLAIN} 更新内核 (Update Core)"
-    echo -e "  ${GREEN}6.${PLAIN} 重启服务 (Restart)"
-    echo -e "  ${GREEN}7.${PLAIN} 卸载脚本 (Uninstall)"
-    echo -e "  ${GREEN}0.${PLAIN} 退出 (Exit)"
+    echo -e "  ${GREEN}1.${PLAIN} 全新安装"
+    echo -e "  ${GREEN}2.${PLAIN} 查看链接"
+    echo -e "  ${GREEN}3.${PLAIN} 查看 Clash Meta 配置 (New!)"
+    echo -e "  ${GREEN}4.${PLAIN} 添加/修改域名"
+    echo -e "  ${GREEN}5.${PLAIN} 修改伪装 SNI"
+    echo -e "  ${GREEN}6.${PLAIN} 更新内核"
+    echo -e "  ${GREEN}7.${PLAIN} 重启服务"
+    echo -e "  ${GREEN}8.${PLAIN} 卸载脚本"
+    echo -e "  ${GREEN}0.${PLAIN} 退出"
     echo -e "----------------------------------"
     read -p "请输入选项: " num
 
@@ -358,7 +389,6 @@ menu() {
                     setup_nginx "$my_domain"
                     generate_config "$my_domain"
                 else
-                    log_warn "证书失败，回退到单协议"
                     setup_nginx ""
                     generate_config ""
                 fi
@@ -370,11 +400,12 @@ menu() {
             show_info
             ;;
         2) show_info ;;
-        3) add_domain ;;
-        4) change_sni ;;
-        5) update_core ;;
-        6) systemctl restart eljefe-v2 && log_info "服务已重启" ;;
-        7) uninstall_all ;;
+        3) show_clash ;;
+        4) add_domain ;;
+        5) change_sni ;;
+        6) update_core ;;
+        7) systemctl restart eljefe-v2 && log_info "服务已重启" ;;
+        8) uninstall_all ;;
         0) exit 0 ;;
         *) log_err "无效选项" ;;
     esac
