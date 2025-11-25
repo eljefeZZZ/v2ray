@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: v12.1 (Fix YAML Domain/IP Logic)
+# Description: v12.2 (Show All Links Fixed)
 # ==================================================
 
 # --- 目录结构 ---
@@ -38,6 +38,7 @@ check_root() {
     [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行" && exit 1
 }
 
+# --- 核心安装函数 (保持不变) ---
 install_dependencies() {
     log_info "安装依赖..."
     if [ -f /etc/debian_version ]; then
@@ -49,10 +50,7 @@ install_dependencies() {
     else
         log_err "不支持的系统" && exit 1
     fi
-    
-    mkdir -p "$ROOT_DIR"
-    mkdir -p "$CERT_DIR"
-    mkdir -p "$WEB_DIR"
+    mkdir -p "$ROOT_DIR" "$CERT_DIR" "$WEB_DIR"
     systemctl stop nginx
 }
 
@@ -73,21 +71,13 @@ setup_cert() {
     log_info "正在为域名 $domain 申请证书..."
     mkdir -p "$ACME_DIR"
     curl https://get.acme.sh | sh -s email=admin@eljefe.com --home "$ACME_DIR"
-    
     log_info "释放 80 端口..."
     systemctl stop nginx
-    if lsof -i :80 > /dev/null; then
-        kill -9 $(lsof -t -i:80)
-    fi
-    
+    if lsof -i :80 > /dev/null; then kill -9 $(lsof -t -i:80); fi
     "$ACME_SCRIPT" --issue -d "$domain" --standalone --keylength ec-256 --force
-    
     if [ $? -eq 0 ]; then
         log_info "证书申请成功！"
-        "$ACME_SCRIPT" --install-cert -d "$domain" --ecc \
-            --key-file       "$CERT_DIR/private.key" \
-            --fullchain-file "$CERT_DIR/fullchain.cer" \
-            --reloadcmd     "systemctl restart nginx"
+        "$ACME_SCRIPT" --install-cert -d "$domain" --ecc --key-file "$CERT_DIR/private.key" --fullchain-file "$CERT_DIR/fullchain.cer" --reloadcmd "systemctl restart nginx"
         return 0
     else
         log_err "证书申请失败！"
@@ -98,38 +88,23 @@ setup_cert() {
 setup_nginx() {
     local domain=$1
     log_info "配置 Nginx..."
-
-    rm -f /etc/nginx/sites-enabled/default
-    rm -f /etc/nginx/conf.d/default.conf
-    
+    rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf
     cat > /etc/nginx/conf.d/eljefe_fallback.conf <<EOF
-server {
-    listen 80;
-    server_name _;
-    root $WEB_DIR;
-    index index.html;
-    access_log off;
-}
+server { listen 80; server_name _; root $WEB_DIR; index index.html; access_log off; }
 EOF
-
     if [[ -n "$domain" ]]; then
         cat > /etc/nginx/conf.d/eljefe_tls.conf <<EOF
 server {
     listen $PORT_TLS ssl http2;
     server_name $domain;
-
-    ssl_certificate       $CERT_DIR/fullchain.cer;
-    ssl_certificate_key   $CERT_DIR/private.key;
-    ssl_protocols         TLSv1.2 TLSv1.3;
-    ssl_ciphers           HIGH:!aNULL:!MD5;
-
+    ssl_certificate $CERT_DIR/fullchain.cer;
+    ssl_certificate_key $CERT_DIR/private.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
     root $WEB_DIR;
     index index.html;
-
     location /eljefe {
-        if (\$http_upgrade != "websocket") {
-            return 404;
-        }
+        if (\$http_upgrade != "websocket") { return 404; }
         proxy_redirect off;
         proxy_pass http://127.0.0.1:$PORT_WS_LOCAL;
         proxy_http_version 1.1;
@@ -139,11 +114,8 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     }
-
     location /vless {
-        if (\$http_upgrade != "websocket") {
-            return 404;
-        }
+        if (\$http_upgrade != "websocket") { return 404; }
         proxy_redirect off;
         proxy_pass http://127.0.0.1:$PORT_VLESS_LOCAL;
         proxy_http_version 1.1;
@@ -165,7 +137,6 @@ install_xray() {
     log_info "安装 Xray..."
     XRAY_REPO="XTLS/Xray-core"
     LATEST_VER=$(curl -s https://api.github.com/repos/$XRAY_REPO/releases/latest | jq -r .tag_name)
-    
     wget -O "$ROOT_DIR/xray.zip" "https://github.com/$XRAY_REPO/releases/download/$LATEST_VER/Xray-linux-64.zip"
     unzip -q -o "$ROOT_DIR/xray.zip" -d "$ROOT_DIR" && rm "$ROOT_DIR/xray.zip"
     chmod +x "$XRAY_BIN"
@@ -175,22 +146,17 @@ generate_config() {
     local domain=$1
     local sni=$2
     [[ -z "$sni" ]] && sni="$DEST_SNI"
-    
     log_info "生成 Xray 配置 (SNI: $sni)..."
-    
     UUID=$(uuidgen | tr -d '\n')
     KEYS=$($XRAY_BIN x25519 2>/dev/null)
     PRI_KEY=$(echo "$KEYS" | grep "Private" | awk '{print $3}' | tr -d '\n')
     PUB_KEY=$(echo "$KEYS" | grep "Public" | awk '{print $3}' | tr -d '\n')
-    
     if [[ -z "$PUB_KEY" ]]; then
         log_warn "使用备用密钥..."
         PRI_KEY="yC4v8X9j2m5n1b7v3c6x4z8l0k9j8h7g6f5d4s3a2q1"
         PUB_KEY="uJ5n8m7b4v3c6x9z1l2k3j4h5g6f7d8s9a0q1w2e3r4"
     fi
-    
     SID=$(openssl rand -hex 4 | tr -d '\n')
-
     cat > "$CONFIG_FILE" <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -199,57 +165,25 @@ generate_config() {
       "tag": "reality_in",
       "port": $PORT_REALITY,
       "protocol": "vless",
-      "settings": {
-        "clients": [{ "id": "$UUID", "flow": "xtls-rprx-vision" }],
-        "decryption": "none"
-      },
+      "settings": { "clients": [{ "id": "$UUID", "flow": "xtls-rprx-vision" }], "decryption": "none" },
       "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "$sni:443",
-          "xver": 0,
-          "serverNames": ["$sni"],
-          "privateKey": "$PRI_KEY",
-          "shortIds": ["$SID"],
-          "fingerprint": "chrome"
-        }
+        "network": "tcp", "security": "reality",
+        "realitySettings": { "show": false, "dest": "$sni:443", "xver": 0, "serverNames": ["$sni"], "privateKey": "$PRI_KEY", "shortIds": ["$SID"], "fingerprint": "chrome" }
       },
       "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
     },
     {
-      "tag": "vmess_in",
-      "listen": "127.0.0.1",
-      "port": $PORT_WS_LOCAL,
-      "protocol": "vmess", 
-      "settings": {
-        "clients": [{ "id": "$UUID", "alterId": 0 }]
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": { "path": "/eljefe" }
-      }
+      "tag": "vmess_in", "listen": "127.0.0.1", "port": $PORT_WS_LOCAL, "protocol": "vmess", 
+      "settings": { "clients": [{ "id": "$UUID", "alterId": 0 }] },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/eljefe" } }
     },
     {
-      "tag": "vless_ws_in",
-      "listen": "127.0.0.1",
-      "port": $PORT_VLESS_LOCAL,
-      "protocol": "vless",
-      "settings": {
-        "clients": [{ "id": "$UUID", "level": 0 }],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": { "path": "/vless" }
-      }
+      "tag": "vless_ws_in", "listen": "127.0.0.1", "port": $PORT_VLESS_LOCAL, "protocol": "vless",
+      "settings": { "clients": [{ "id": "$UUID", "level": 0 }], "decryption": "none" },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
     }
   ],
-  "outbounds": [
-    { "protocol": "freedom", "tag": "direct" },
-    { "protocol": "blackhole", "tag": "block" }
-  ]
+  "outbounds": [ { "protocol": "freedom", "tag": "direct" }, { "protocol": "blackhole", "tag": "block" } ]
 }
 EOF
     echo "UUID=$UUID" > "$INFO_FILE"
@@ -264,12 +198,10 @@ setup_service() {
 [Unit]
 Description=ElJefe-V2
 After=network.target
-
 [Service]
 User=root
 ExecStart=$XRAY_BIN run -config $CONFIG_FILE
 Restart=on-failure
-
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -278,6 +210,7 @@ EOF
     systemctl restart eljefe-v2
 }
 
+# --- 修正: 显示所有链接 ---
 show_info() {
     [ ! -f "$INFO_FILE" ] && log_err "未找到配置" && return
     UUID=$(grep "UUID=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
@@ -290,6 +223,20 @@ show_info() {
 
     LINK_REALITY="vless://${UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUB_KEY}&sid=${SID}&type=tcp&headerType=none#ElJefe_Reality"
     
+    LINK_VLESS_WS=""
+    LINK_VMESS=""
+    
+    if [[ -n "$DOMAIN" ]]; then
+        # VLESS-WS 链接生成
+        LINK_VLESS_WS="vless://${UUID}@${DOMAIN}:${PORT_TLS}?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=/vless#ElJefe_VLESS_WS"
+        
+        # VMess 链接生成
+        VMESS_BASE="auto:${UUID}@${DOMAIN}:${PORT_TLS}"
+        VMESS_BASE_B64=$(echo -n "$VMESS_BASE" | base64 -w 0)
+        PARAMS="path=/eljefe&remarks=ElJefe_VMess&obfsParam=${DOMAIN}&obfs=websocket&tls=1&peer=${DOMAIN}&alterId=0"
+        LINK_VMESS="vmess://${VMESS_BASE_B64}?${PARAMS}"
+    fi
+
     echo ""
     echo -e "${BLUE}=== ElJefe-V2 信息面板 ===${PLAIN}"
     echo -e "${YELLOW}[1] Reality${PLAIN}"
@@ -297,10 +244,13 @@ show_info() {
     echo ""
     
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "${YELLOW}[2] VLESS-WS-TLS & VMess${PLAIN}"
-        echo -e "请使用菜单选项 [3] 查看详细 YAML 配置"
+        echo -e "${YELLOW}[2] VLESS-WS-TLS (OpenClash兼容)${PLAIN}"
+        echo -e "${GREEN}$LINK_VLESS_WS${PLAIN}"
+        echo ""
+        echo -e "${YELLOW}[3] VMess-WS-TLS (备用)${PLAIN}"
+        echo -e "${GREEN}$LINK_VMESS${PLAIN}"
     else
-        echo -e "${RED}[注意] 未配置域名${PLAIN}"
+        echo -e "${RED}[注意] 未配置域名，仅显示 Reality${PLAIN}"
     fi
     echo ""
 }
@@ -319,7 +269,7 @@ show_yaml() {
     echo -e "${YELLOW}=== 📋 1. Reality (推荐/直连) ===${PLAIN}"
     echo -e "  - name: \"ElJefe-Reality\""
     echo -e "    type: vless"
-    echo -e "    server: $IP"             # Reality 用 IP
+    echo -e "    server: $IP"
     echo -e "    port: 443"
     echo -e "    uuid: $UUID"
     echo -e "    network: tcp"
@@ -337,7 +287,7 @@ show_yaml() {
         echo -e "${YELLOW}=== 📋 2. VLESS-WS-TLS (兼容/CDN) ===${PLAIN}"
         echo -e "  - name: \"ElJefe-VLESS\""
         echo -e "    type: vless"
-        echo -e "    server: $DOMAIN"       # <--- 修正: VLESS 用域名
+        echo -e "    server: $DOMAIN"
         echo -e "    port: 443"
         echo -e "    uuid: $UUID"
         echo -e "    tls: true"
@@ -353,7 +303,7 @@ show_yaml() {
         echo -e "${YELLOW}=== 📋 3. VMess-WS-TLS (老牌备用) ===${PLAIN}"
         echo -e "  - name: \"ElJefe-VMess\""
         echo -e "    type: vmess"
-        echo -e "    server: $DOMAIN"       # <--- 修正: VMess 用域名
+        echo -e "    server: $DOMAIN"
         echo -e "    port: 443"
         echo -e "    uuid: $UUID"
         echo -e "    alterId: 0"
@@ -419,11 +369,11 @@ uninstall_all() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v12.1 Fix]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v12.2 ShowAll]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装"
-    echo -e "  ${GREEN}2.${PLAIN} 查看链接"
-    echo -e "  ${GREEN}3.${PLAIN} 查看 YAML 节点配置 (Show YAML)"
+    echo -e "  ${GREEN}2.${PLAIN} 查看链接 (所有协议)"
+    echo -e "  ${GREEN}3.${PLAIN} 查看 YAML 节点配置"
     echo -e "  ${GREEN}4.${PLAIN} 添加/修改域名"
     echo -e "  ${GREEN}5.${PLAIN} 修改伪装 SNI"
     echo -e "  ${GREEN}6.${PLAIN} 更新内核"
