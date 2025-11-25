@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: v12.2 (Show All Links Fixed)
+# Description: v12.3 (Fix YAML Port Logic)
 # ==================================================
 
 # --- 目录结构 ---
@@ -21,7 +21,7 @@ DEST_SNI="www.microsoft.com"
 PORT_REALITY=443
 PORT_WS_LOCAL=2087
 PORT_VLESS_LOCAL=2088
-PORT_TLS=8443
+PORT_TLS=8443 # <--- 这里的端口是 8443
 
 # --- 颜色 ---
 RED='\033[31m'
@@ -210,7 +210,6 @@ EOF
     systemctl restart eljefe-v2
 }
 
-# --- 修正: 显示所有链接 ---
 show_info() {
     [ ! -f "$INFO_FILE" ] && log_err "未找到配置" && return
     UUID=$(grep "UUID=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
@@ -227,10 +226,9 @@ show_info() {
     LINK_VMESS=""
     
     if [[ -n "$DOMAIN" ]]; then
-        # VLESS-WS 链接生成
+        # 这里的端口必须是 $PORT_TLS (8443)
         LINK_VLESS_WS="vless://${UUID}@${DOMAIN}:${PORT_TLS}?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=/vless#ElJefe_VLESS_WS"
         
-        # VMess 链接生成
         VMESS_BASE="auto:${UUID}@${DOMAIN}:${PORT_TLS}"
         VMESS_BASE_B64=$(echo -n "$VMESS_BASE" | base64 -w 0)
         PARAMS="path=/eljefe&remarks=ElJefe_VMess&obfsParam=${DOMAIN}&obfs=websocket&tls=1&peer=${DOMAIN}&alterId=0"
@@ -244,13 +242,13 @@ show_info() {
     echo ""
     
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "${YELLOW}[2] VLESS-WS-TLS (OpenClash兼容)${PLAIN}"
+        echo -e "${YELLOW}[2] VLESS-WS-TLS${PLAIN}"
         echo -e "${GREEN}$LINK_VLESS_WS${PLAIN}"
         echo ""
-        echo -e "${YELLOW}[3] VMess-WS-TLS (备用)${PLAIN}"
+        echo -e "${YELLOW}[3] VMess-WS-TLS${PLAIN}"
         echo -e "${GREEN}$LINK_VMESS${PLAIN}"
     else
-        echo -e "${RED}[注意] 未配置域名，仅显示 Reality${PLAIN}"
+        echo -e "${RED}[注意] 未配置域名${PLAIN}"
     fi
     echo ""
 }
@@ -270,7 +268,7 @@ show_yaml() {
     echo -e "  - name: \"ElJefe-Reality\""
     echo -e "    type: vless"
     echo -e "    server: $IP"
-    echo -e "    port: 443"
+    echo -e "    port: $PORT_REALITY"     # <--- 443
     echo -e "    uuid: $UUID"
     echo -e "    network: tcp"
     echo -e "    tls: true"
@@ -288,7 +286,7 @@ show_yaml() {
         echo -e "  - name: \"ElJefe-VLESS\""
         echo -e "    type: vless"
         echo -e "    server: $DOMAIN"
-        echo -e "    port: 443"
+        echo -e "    port: $PORT_TLS"       # <--- 修正为 8443
         echo -e "    uuid: $UUID"
         echo -e "    tls: true"
         echo -e "    udp: true"
@@ -304,7 +302,7 @@ show_yaml() {
         echo -e "  - name: \"ElJefe-VMess\""
         echo -e "    type: vmess"
         echo -e "    server: $DOMAIN"
-        echo -e "    port: 443"
+        echo -e "    port: $PORT_TLS"       # <--- 修正为 8443
         echo -e "    uuid: $UUID"
         echo -e "    alterId: 0"
         echo -e "    cipher: auto"
@@ -369,10 +367,10 @@ uninstall_all() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v12.2 ShowAll]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v12.3 Port Fix]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装"
-    echo -e "  ${GREEN}2.${PLAIN} 查看链接 (所有协议)"
+    echo -e "  ${GREEN}2.${PLAIN} 查看链接"
     echo -e "  ${GREEN}3.${PLAIN} 查看 YAML 节点配置"
     echo -e "  ${GREEN}4.${PLAIN} 添加/修改域名"
     echo -e "  ${GREEN}5.${PLAIN} 修改伪装 SNI"
