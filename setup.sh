@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: v10.1 (Fix Key Gen Logic)
+# Description: v11.0 (Added VLESS-WS-TLS Support)
 # ==================================================
 
 # --- 目录结构 ---
@@ -19,8 +19,9 @@ ACME_SCRIPT="$ACME_DIR/acme.sh"
 DEST_SITE="www.microsoft.com:443"
 DEST_SNI="www.microsoft.com"
 PORT_REALITY=443
-PORT_WS_LOCAL=2087
-PORT_TLS=8443
+PORT_WS_LOCAL=2087    # VMess 内部端口
+PORT_VLESS_LOCAL=2088 # VLESS 内部端口 (新)
+PORT_TLS=8443         # Nginx 监听端口
 
 # --- 颜色 ---
 RED='\033[31m'
@@ -125,12 +126,28 @@ server {
     root $WEB_DIR;
     index index.html;
 
+    # VMess-WS (旧备用)
     location /eljefe {
         if (\$http_upgrade != "websocket") {
             return 404;
         }
         proxy_redirect off;
         proxy_pass http://127.0.0.1:$PORT_WS_LOCAL;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    }
+
+    # VLESS-WS (新通道 - OpenClash兼容)
+    location /vless {
+        if (\$http_upgrade != "websocket") {
+            return 404;
+        }
+        proxy_redirect off;
+        proxy_pass http://127.0.0.1:$PORT_VLESS_LOCAL;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -165,15 +182,13 @@ generate_config() {
     
     UUID=$(uuidgen | tr -d '\n')
     
-    # --- 优化的密钥生成逻辑 ---
-    # 1. 尝试生成
+    # 密钥生成 (包含回退机制)
     KEYS=$($XRAY_BIN x25519 2>/dev/null)
     PRI_KEY=$(echo "$KEYS" | grep "Private" | awk '{print $3}' | tr -d '\n')
     PUB_KEY=$(echo "$KEYS" | grep "Public" | awk '{print $3}' | tr -d '\n')
     
-    # 2. 失败回退 (备用密钥)
     if [[ -z "$PUB_KEY" ]]; then
-        log_warn "检测到系统无法生成密钥，使用内置备用密钥..."
+        log_warn "使用备用密钥..."
         PRI_KEY="yC4v8X9j2m5n1b7v3c6x4z8l0k9j8h7g6f5d4s3a2q1"
         PUB_KEY="uJ5n8m7b4v3c6x9z1l2k3j4h5g6f7d8s9a0q1w2e3r4"
     fi
@@ -219,6 +234,20 @@ generate_config() {
         "network": "ws",
         "wsSettings": { "path": "/eljefe" }
       }
+    },
+    {
+      "tag": "vless_ws_in",
+      "listen": "127.0.0.1",
+      "port": $PORT_VLESS_LOCAL,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{ "id": "$UUID", "level": 0 }],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": { "path": "/vless" }
+      }
     }
   ],
   "outbounds": [
@@ -256,70 +285,48 @@ EOF
 show_info() {
     [ ! -f "$INFO_FILE" ] && log_err "未找到配置" && return
     
-    # 只读取最后一次写入的配置 (防重复)
     UUID=$(grep "UUID=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
     PUB_KEY=$(grep "PUB_KEY=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
     SID=$(grep "SID=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
     DOMAIN=$(grep "DOMAIN=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
     SNI=$(grep "SNI=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
-    
-    # IP 实时获取
     IP=$(curl -s4 https://api.ipify.org | tr -d '\n')
     
     [[ -z "$SNI" ]] && SNI="$DEST_SNI"
 
+    # Reality 链接
     LINK_REALITY="vless://${UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUB_KEY}&sid=${SID}&type=tcp&headerType=none#ElJefe_Reality"
     
+    # VLESS-WS-TLS 链接 (新)
+    LINK_VLESS_WS=""
+    if [[ -n "$DOMAIN" ]]; then
+        LINK_VLESS_WS="vless://${UUID}@${DOMAIN}:${PORT_TLS}?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=/vless#ElJefe_VLESS_WS"
+    fi
+    
+    # VMess-WS-TLS 链接 (旧)
+    LINK_VMESS=""
     if [[ -n "$DOMAIN" ]]; then
         VMESS_BASE="auto:${UUID}@${DOMAIN}:${PORT_TLS}"
         VMESS_BASE_B64=$(echo -n "$VMESS_BASE" | base64 -w 0)
-        PARAMS="path=/eljefe&remarks=ElJefe_VMess_CDN&obfsParam=${DOMAIN}&obfs=websocket&tls=1&peer=${DOMAIN}&alterId=0"
+        PARAMS="path=/eljefe&remarks=ElJefe_VMess_Old&obfsParam=${DOMAIN}&obfs=websocket&tls=1&peer=${DOMAIN}&alterId=0"
         LINK_VMESS="vmess://${VMESS_BASE_B64}?${PARAMS}"
     fi
 
     echo ""
     echo -e "${BLUE}=== ElJefe-V2 信息面板 ===${PLAIN}"
-    echo -e "${YELLOW}[主通道] Reality (直连)${PLAIN}"
+    echo -e "${YELLOW}[1] Reality (推荐/直连)${PLAIN}"
     echo -e "${GREEN}$LINK_REALITY${PLAIN}"
     echo ""
+    
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "${YELLOW}[备用通道] VMess-WS-TLS${PLAIN}"
+        echo -e "${YELLOW}[2] VLESS-WS-TLS (OpenClash兼容/可CDN)${PLAIN}"
+        echo -e "${GREEN}$LINK_VLESS_WS${PLAIN}"
+        echo ""
+        echo -e "${YELLOW}[3] VMess-WS-TLS (老备用)${PLAIN}"
         echo -e "${GREEN}$LINK_VMESS${PLAIN}"
     else
-        echo -e "${RED}[备用通道] 未配置域名${PLAIN}"
+        echo -e "${RED}[注意] 未配置域名，VLESS-WS 和 VMess 不可用${PLAIN}"
     fi
-    echo ""
-}
-
-show_clash() {
-    [ ! -f "$INFO_FILE" ] && log_err "未找到配置" && return
-    UUID=$(grep "UUID=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
-    PUB_KEY=$(grep "PUB_KEY=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
-    SID=$(grep "SID=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
-    SNI=$(grep "SNI=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
-    IP=$(curl -s4 https://api.ipify.org | tr -d '\n')
-    [[ -z "$SNI" ]] && SNI="$DEST_SNI"
-
-    echo ""
-    echo -e "${YELLOW}[Clash Meta (Mihomo) 配置文件段落]${PLAIN}"
-    echo -e "------------------------------------------------"
-    echo -e "proxies:"
-    echo -e "  - name: \"ElJefe-Reality\""
-    echo -e "    type: vless"
-    echo -e "    server: $IP"
-    echo -e "    port: 443"
-    echo -e "    uuid: $UUID"
-    echo -e "    network: tcp"
-    echo -e "    tls: true"
-    echo -e "    udp: true"
-    echo -e "    flow: xtls-rprx-vision"
-    echo -e "    servername: $SNI"
-    echo -e "    reality-opts:"
-    echo -e "      public-key: $PUB_KEY"
-    echo -e "      short-id: $SID"
-    echo -e "    client-fingerprint: chrome"
-    echo -e "------------------------------------------------"
-    echo -e "${BLUE}提示: 请将以上内容复制到你的 Clash Meta 配置文件 (proxies 字段下)${PLAIN}"
     echo ""
 }
 
@@ -371,16 +378,15 @@ uninstall_all() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v10.1 Stable]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v11.0 Universal]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装"
     echo -e "  ${GREEN}2.${PLAIN} 查看链接"
-    echo -e "  ${GREEN}3.${PLAIN} 查看 Clash Meta 配置"
-    echo -e "  ${GREEN}4.${PLAIN} 添加/修改域名"
-    echo -e "  ${GREEN}5.${PLAIN} 修改伪装 SNI"
-    echo -e "  ${GREEN}6.${PLAIN} 更新内核"
-    echo -e "  ${GREEN}7.${PLAIN} 重启服务"
-    echo -e "  ${GREEN}8.${PLAIN} 卸载脚本"
+    echo -e "  ${GREEN}3.${PLAIN} 添加/修改域名"
+    echo -e "  ${GREEN}4.${PLAIN} 修改伪装 SNI"
+    echo -e "  ${GREEN}5.${PLAIN} 更新内核"
+    echo -e "  ${GREEN}6.${PLAIN} 重启服务"
+    echo -e "  ${GREEN}7.${PLAIN} 卸载脚本"
     echo -e "  ${GREEN}0.${PLAIN} 退出"
     echo -e "----------------------------------"
     read -p "请输入选项: " num
@@ -392,7 +398,7 @@ menu() {
             install_xray
             setup_fake_site
             echo ""
-            echo -e "${YELLOW}是否配置域名 (VMess-WS-TLS)？${PLAIN}"
+            echo -e "${YELLOW}是否配置域名 (启用 VLESS-WS & VMess)？${PLAIN}"
             echo -e "1. 是"
             echo -e "2. 否"
             read -p "选择: " choice
@@ -414,12 +420,11 @@ menu() {
             show_info
             ;;
         2) show_info ;;
-        3) show_clash ;;
-        4) add_domain ;;
-        5) change_sni ;;
-        6) update_core ;;
-        7) systemctl restart eljefe-v2 && log_info "服务已重启" ;;
-        8) uninstall_all ;;
+        3) add_domain ;;
+        4) change_sni ;;
+        5) update_core ;;
+        6) systemctl restart eljefe-v2 && log_info "服务已重启" ;;
+        7) uninstall_all ;;
         0) exit 0 ;;
         *) log_err "无效选项" ;;
     esac
