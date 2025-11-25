@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: v12.3 (Fix YAML Port Logic)
+# Description: v13.0 (Fix New Xray Output Format)
 # ==================================================
 
 # --- 目录结构 ---
@@ -21,7 +21,7 @@ DEST_SNI="www.microsoft.com"
 PORT_REALITY=443
 PORT_WS_LOCAL=2087
 PORT_VLESS_LOCAL=2088
-PORT_TLS=8443 # <--- 这里的端口是 8443
+PORT_TLS=8443
 
 # --- 颜色 ---
 RED='\033[31m'
@@ -38,9 +38,9 @@ check_root() {
     [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行" && exit 1
 }
 
-# --- 核心安装函数 (保持不变) ---
 install_dependencies() {
     log_info "安装依赖..."
+    # 强制安装 unzip 以防万一
     if [ -f /etc/debian_version ]; then
         apt-get update -y
         apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat
@@ -148,15 +148,35 @@ generate_config() {
     [[ -z "$sni" ]] && sni="$DEST_SNI"
     log_info "生成 Xray 配置 (SNI: $sni)..."
     UUID=$(uuidgen | tr -d '\n')
+    
+    # --- 关键修正: 适配新版 Xray 输出格式 ---
     KEYS=$($XRAY_BIN x25519 2>/dev/null)
+    
+    # 尝试抓取旧版格式 "Private Key"
     PRI_KEY=$(echo "$KEYS" | grep "Private" | awk '{print $3}' | tr -d '\n')
+    
+    # 尝试抓取新版格式 "PrivateKey" (无空格)
+    if [[ -z "$PRI_KEY" ]]; then
+        PRI_KEY=$(echo "$KEYS" | grep "PrivateKey" | awk '{print $2}' | tr -d '\n')
+    fi
+
+    # 尝试抓取旧版 "Public Key"
     PUB_KEY=$(echo "$KEYS" | grep "Public" | awk '{print $3}' | tr -d '\n')
+
+    # 尝试抓取新版 "Password" (即公钥)
     if [[ -z "$PUB_KEY" ]]; then
-        log_warn "使用备用密钥..."
+        PUB_KEY=$(echo "$KEYS" | grep "Password" | awk '{print $2}' | tr -d '\n')
+    fi
+    
+    # 如果还是抓不到，那才是真的挂了，启用备用
+    if [[ -z "$PUB_KEY" ]]; then
+        log_warn "无法识别密钥格式，启用兼容模式备用密钥..."
         PRI_KEY="yC4v8X9j2m5n1b7v3c6x4z8l0k9j8h7g6f5d4s3a2q1"
         PUB_KEY="uJ5n8m7b4v3c6x9z1l2k3j4h5g6f7d8s9a0q1w2e3r4"
     fi
+    
     SID=$(openssl rand -hex 4 | tr -d '\n')
+    
     cat > "$CONFIG_FILE" <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -221,14 +241,10 @@ show_info() {
     [[ -z "$SNI" ]] && SNI="$DEST_SNI"
 
     LINK_REALITY="vless://${UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUB_KEY}&sid=${SID}&type=tcp&headerType=none#ElJefe_Reality"
-    
     LINK_VLESS_WS=""
     LINK_VMESS=""
-    
     if [[ -n "$DOMAIN" ]]; then
-        # 这里的端口必须是 $PORT_TLS (8443)
         LINK_VLESS_WS="vless://${UUID}@${DOMAIN}:${PORT_TLS}?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=/vless#ElJefe_VLESS_WS"
-        
         VMESS_BASE="auto:${UUID}@${DOMAIN}:${PORT_TLS}"
         VMESS_BASE_B64=$(echo -n "$VMESS_BASE" | base64 -w 0)
         PARAMS="path=/eljefe&remarks=ElJefe_VMess&obfsParam=${DOMAIN}&obfs=websocket&tls=1&peer=${DOMAIN}&alterId=0"
@@ -240,7 +256,6 @@ show_info() {
     echo -e "${YELLOW}[1] Reality${PLAIN}"
     echo -e "${GREEN}$LINK_REALITY${PLAIN}"
     echo ""
-    
     if [[ -n "$DOMAIN" ]]; then
         echo -e "${YELLOW}[2] VLESS-WS-TLS${PLAIN}"
         echo -e "${GREEN}$LINK_VLESS_WS${PLAIN}"
@@ -267,17 +282,17 @@ show_yaml() {
     echo -e "${YELLOW}=== 📋 1. Reality (推荐/直连) ===${PLAIN}"
     echo -e "  - name: \"ElJefe-Reality\""
     echo -e "    type: vless"
-    echo -e "    server: $IP"
-    echo -e "    port: $PORT_REALITY"     # <--- 443
-    echo -e "    uuid: $UUID"
+    echo -e "    server: \"$IP\""
+    echo -e "    port: $PORT_REALITY"
+    echo -e "    uuid: \"$UUID\""
     echo -e "    network: tcp"
     echo -e "    tls: true"
     echo -e "    udp: true"
     echo -e "    flow: xtls-rprx-vision"
-    echo -e "    servername: $SNI"
+    echo -e "    servername: \"$SNI\""
     echo -e "    reality-opts:"
-    echo -e "      public-key: $PUB_KEY"
-    echo -e "      short-id: $SID"
+    echo -e "      public-key: \"$PUB_KEY\""
+    echo -e "      short-id: \"$SID\""
     echo -e "    client-fingerprint: chrome"
     echo ""
 
@@ -285,25 +300,25 @@ show_yaml() {
         echo -e "${YELLOW}=== 📋 2. VLESS-WS-TLS (兼容/CDN) ===${PLAIN}"
         echo -e "  - name: \"ElJefe-VLESS\""
         echo -e "    type: vless"
-        echo -e "    server: $DOMAIN"
-        echo -e "    port: $PORT_TLS"       # <--- 修正为 8443
-        echo -e "    uuid: $UUID"
+        echo -e "    server: \"$DOMAIN\""
+        echo -e "    port: $PORT_TLS"
+        echo -e "    uuid: \"$UUID\""
         echo -e "    tls: true"
         echo -e "    udp: true"
         echo -e "    network: ws"
-        echo -e "    servername: $DOMAIN"
+        echo -e "    servername: \"$DOMAIN\""
         echo -e "    ws-opts:"
         echo -e "      path: \"/vless\""
         echo -e "      headers:"
-        echo -e "        Host: $DOMAIN"
+        echo -e "        Host: \"$DOMAIN\""
         echo ""
         
         echo -e "${YELLOW}=== 📋 3. VMess-WS-TLS (老牌备用) ===${PLAIN}"
         echo -e "  - name: \"ElJefe-VMess\""
         echo -e "    type: vmess"
-        echo -e "    server: $DOMAIN"
-        echo -e "    port: $PORT_TLS"       # <--- 修正为 8443
-        echo -e "    uuid: $UUID"
+        echo -e "    server: \"$DOMAIN\""
+        echo -e "    port: $PORT_TLS"
+        echo -e "    uuid: \"$UUID\""
         echo -e "    alterId: 0"
         echo -e "    cipher: auto"
         echo -e "    tls: true"
@@ -312,7 +327,7 @@ show_yaml() {
         echo -e "    ws-opts:"
         echo -e "      path: \"/eljefe\""
         echo -e "      headers:"
-        echo -e "        Host: $DOMAIN"
+        echo -e "        Host: \"$DOMAIN\""
     else
         echo -e "${RED}未配置域名，VLESS-WS 和 VMess 模板不可用。${PLAIN}"
     fi
@@ -367,7 +382,7 @@ uninstall_all() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v12.3 Port Fix]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v13.0 Final Fix]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装"
     echo -e "  ${GREEN}2.${PLAIN} 查看链接"
