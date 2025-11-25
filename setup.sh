@@ -3,7 +3,7 @@
 # ==================================================
 # Project: ElJefe-V2 Manager
 # Author: eljefeZZZ
-# Description: v12.0 (Auto YAML Generator)
+# Description: v12.1 (Fix YAML Domain/IP Logic)
 # ==================================================
 
 # --- 目录结构 ---
@@ -38,7 +38,6 @@ check_root() {
     [[ $EUID -ne 0 ]] && log_err "必须使用 Root 权限运行" && exit 1
 }
 
-# --- 核心安装函数 (保持不变) ---
 install_dependencies() {
     log_info "安装依赖..."
     if [ -f /etc/debian_version ]; then
@@ -279,7 +278,6 @@ EOF
     systemctl restart eljefe-v2
 }
 
-# --- 显示链接函数 ---
 show_info() {
     [ ! -f "$INFO_FILE" ] && log_err "未找到配置" && return
     UUID=$(grep "UUID=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
@@ -307,7 +305,6 @@ show_info() {
     echo ""
 }
 
-# --- 新功能: 生成 YAML 配置 ---
 show_yaml() {
     [ ! -f "$INFO_FILE" ] && log_err "未找到配置" && return
     UUID=$(grep "UUID=" "$INFO_FILE" | tail -n1 | cut -d= -f2)
@@ -322,7 +319,7 @@ show_yaml() {
     echo -e "${YELLOW}=== 📋 1. Reality (推荐/直连) ===${PLAIN}"
     echo -e "  - name: \"ElJefe-Reality\""
     echo -e "    type: vless"
-    echo -e "    server: $IP"
+    echo -e "    server: $IP"             # Reality 用 IP
     echo -e "    port: 443"
     echo -e "    uuid: $UUID"
     echo -e "    network: tcp"
@@ -340,7 +337,7 @@ show_yaml() {
         echo -e "${YELLOW}=== 📋 2. VLESS-WS-TLS (兼容/CDN) ===${PLAIN}"
         echo -e "  - name: \"ElJefe-VLESS\""
         echo -e "    type: vless"
-        echo -e "    server: $IP"  
+        echo -e "    server: $DOMAIN"       # <--- 修正: VLESS 用域名
         echo -e "    port: 443"
         echo -e "    uuid: $UUID"
         echo -e "    tls: true"
@@ -356,7 +353,7 @@ show_yaml() {
         echo -e "${YELLOW}=== 📋 3. VMess-WS-TLS (老牌备用) ===${PLAIN}"
         echo -e "  - name: \"ElJefe-VMess\""
         echo -e "    type: vmess"
-        echo -e "    server: $IP"
+        echo -e "    server: $DOMAIN"       # <--- 修正: VMess 用域名
         echo -e "    port: 443"
         echo -e "    uuid: $UUID"
         echo -e "    alterId: 0"
@@ -422,7 +419,7 @@ uninstall_all() {
 
 menu() {
     clear
-    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v12.0 YAML Generator]${PLAIN}"
+    echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v12.1 Fix]${PLAIN}"
     echo -e "----------------------------------"
     echo -e "  ${GREEN}1.${PLAIN} 全新安装"
     echo -e "  ${GREEN}2.${PLAIN} 查看链接"
