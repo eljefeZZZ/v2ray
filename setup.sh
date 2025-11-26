@@ -2,8 +2,8 @@
 
 # ==================================================
 # Project: ElJefe-V2 Manager (Pro)
-# Version: v15.4 (Fix: Port Conflict Prevention)
-# Features: Reality/VLESS/VMess | Non-root User | Auto-Kill 443
+# Version: v15.5 (Final Fix: Self-Healing Nginx)
+# Features: Reality/VLESS/VMess | Auto-Repair Config | Anti-Conflict
 # Author: eljefeZZZ
 # ==================================================
 
@@ -62,7 +62,7 @@ install_dependencies() {
         useradd -r -s /bin/false "$XRAY_USER"
     fi
     
-    # [核心优化] 安装完依赖立即清理 Nginx 默认配置
+    # [清理] 安装完依赖立即清理 Nginx 默认干扰项
     rm -f /etc/nginx/sites-enabled/default
     rm -f /etc/nginx/conf.d/default.conf
     systemctl stop nginx
@@ -112,13 +112,43 @@ setup_nginx() {
     local domain=$1
     log_info "配置 Nginx..."
     
-    # [核心优化] 再次清理默认配置
+    # [v15.5 核心修复] 自动修复缺失的 nginx.conf
+    if [ ! -f /etc/nginx/nginx.conf ]; then
+        log_warn "检测到 nginx.conf 缺失，正在重建..."
+        mkdir -p /etc/nginx
+        cat > /etc/nginx/nginx.conf <<EOF
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
+events { worker_connections 768; }
+http {
+    sendfile on;
+    tcp_nopush on;
+    types_hash_max_size 2048;
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+    gzip on;
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}
+EOF
+    fi
+
+    # 清理默认配置
     rm -f /etc/nginx/sites-enabled/default
     
-    # 修正主配置 (防止重复)
+    # 修正主配置 (防止重复 + 安全检查)
     sed -i '/server_tokens/d' /etc/nginx/nginx.conf
-    sed -i '/http {/a \    server_tokens off;' /etc/nginx/nginx.conf
+    if grep -q "http {" /etc/nginx/nginx.conf; then
+        sed -i '/http {/a \    server_tokens off;' /etc/nginx/nginx.conf
+    fi
 
+    # 写入 80 回落配置
     cat > /etc/nginx/conf.d/eljefe_fallback.conf <<EOF
 server {
     listen 80;
@@ -208,6 +238,7 @@ install_xray() {
             verified=true; break
         fi
         
+        # 智能兜底
         local filesize=$(stat -c%s "$ROOT_DIR/xray.zip" 2>/dev/null || echo 0)
         if [[ $filesize -gt 5000000 ]]; then
             log_warn "Hash提取失败但文件正常，智能放行..."; verified=true; break
@@ -235,8 +266,6 @@ generate_config() {
     log_info "生成 Xray 配置 (三协议共存)..."
 
     local keys=$("$XRAY_BIN" x25519)
-    
-    # [密钥抓取修复]
     local pri_key=$(echo "$keys" | awk -F': ' '/Private/ {print $2}' | tr -d '\r\n')
     local pub_key=$(echo "$keys" | awk -F': ' '/Password/ {print $2}' | tr -d '\r\n')
     [[ -z "$pub_key" ]] && pub_key=$(echo "$keys" | awk -F': ' '/Public/ {print $2}' | tr -d '\r\n')
@@ -326,10 +355,7 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    
-    # [核心优化] 启动前强制杀掉占用 443 的进程 (防止 Nginx 抢占)
     fuser -k 443/tcp >/dev/null 2>&1
-    
     systemctl enable eljefe-v2
     systemctl restart eljefe-v2
 }
@@ -356,7 +382,7 @@ show_info() {
     source "$INFO_FILE"
     local ip=$(curl -s https://api.ipify.org)
     
-    echo -e "\n${GREEN}=== 节点配置信息 (v15.4) ===${PLAIN}"
+    echo -e "\n${GREEN}=== 节点配置信息 (v15.5) ===${PLAIN}"
     echo -e "UUID: $UUID"
     echo -e "Reality Key: $PUB_KEY"
     echo -e "------------------------"
@@ -484,7 +510,7 @@ toggle_bbr() {
 
 menu() {
     clear
-    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.4 Final]${PLAIN}"
+    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.5 Self-Healing]${PLAIN}"
     echo -e "----------------------------------"
     echo -e " ${GREEN}1.${PLAIN} 全新安装"
     echo -e " ${GREEN}2.${PLAIN} 查看链接"
