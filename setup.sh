@@ -2,8 +2,8 @@
 
 # ==================================================
 # Project: ElJefe-V2 Manager (Pro)
-# Version: v15.5 (Final Fix: Self-Healing Nginx)
-# Features: Reality/VLESS/VMess | Auto-Repair Config | Anti-Conflict
+# Version: v15.6 (Final Fix: Reality YAML ServerName)
+# Features: Reality/VLESS/VMess | Self-Healing | YAML Fix
 # Author: eljefeZZZ
 # ==================================================
 
@@ -238,7 +238,6 @@ install_xray() {
             verified=true; break
         fi
         
-        # 智能兜底
         local filesize=$(stat -c%s "$ROOT_DIR/xray.zip" 2>/dev/null || echo 0)
         if [[ $filesize -gt 5000000 ]]; then
             log_warn "Hash提取失败但文件正常，智能放行..."; verified=true; break
@@ -261,7 +260,7 @@ generate_config() {
     local domain=$1
     local uuid=$(uuidgen)
     local sni=$DEST_SNI
-    [[ -n "$domain" ]] && sni=$domain
+    [[ -n "$domain" ]] && sni=$domain  # 这里只是为了兼容旧逻辑，实际上 Reality 的 sni 应该固定
 
     log_info "生成 Xray 配置 (三协议共存)..."
 
@@ -278,6 +277,8 @@ generate_config() {
 
     local sid=$(openssl rand -hex 4 | tr -d '\n')
 
+    # 写入 config.json
+    # 注意：realitySettings 中的 dest 和 serverNames 必须固定为微软
     cat > "$CONFIG_FILE" <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -332,7 +333,7 @@ EOF
     echo "PUB_KEY=$pub_key" >> "$INFO_FILE"
     echo "SID=$sid" >> "$INFO_FILE"
     echo "DOMAIN=$domain" >> "$INFO_FILE"
-    echo "SNI=$sni" >> "$INFO_FILE"
+    echo "SNI=$DEST_SNI" >> "$INFO_FILE"  # 强制保存微软 SNI
 }
 
 setup_service() {
@@ -382,12 +383,13 @@ show_info() {
     source "$INFO_FILE"
     local ip=$(curl -s https://api.ipify.org)
     
-    echo -e "\n${GREEN}=== 节点配置信息 (v15.5) ===${PLAIN}"
+    echo -e "\n${GREEN}=== 节点配置信息 (v15.6) ===${PLAIN}"
     echo -e "UUID: $UUID"
     echo -e "Reality Key: $PUB_KEY"
     echo -e "------------------------"
     echo -e "${YELLOW}1. Reality (直连/防封)${PLAIN}"
-    echo -e "vless://$UUID@$ip:$PORT_REALITY?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SID&type=tcp&headerType=none#ElJefe_Reality"
+    # 这里 SNI 必须用 $DEST_SNI (www.microsoft.com)
+    echo -e "vless://$UUID@$ip:$PORT_REALITY?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$DEST_SNI&fp=chrome&pbk=$PUB_KEY&sid=$SID&type=tcp&headerType=none#ElJefe_Reality"
     
     if [[ -n "$DOMAIN" ]]; then
         echo -e "\n${YELLOW}2. VLESS-WS-TLS (OpenClash/CDN)${PLAIN}"
@@ -407,6 +409,7 @@ show_yaml() {
     echo -e "\n${GREEN}=== Clash YAML 格式 ===${PLAIN}"
     echo -e "${BLUE}# 复制以下内容到你的 YAML 文件 proxy-providers 或 proxies 下${PLAIN}"
     
+    # [核心修正] servername 使用 $DEST_SNI (www.microsoft.com)
     echo -e "- name: ElJefe_Reality"
     echo -e "  type: vless"
     echo -e "  server: $ip"
@@ -416,13 +419,14 @@ show_yaml() {
     echo -e "  tls: true"
     echo -e "  udp: true"
     echo -e "  flow: xtls-rprx-vision"
-    echo -e "  servername: $SNI"
+    echo -e "  servername: $DEST_SNI"
     echo -e "  reality-opts:"
     echo -e "    public-key: $PUB_KEY"
-    echo -e "    short-id: $SID"
+    echo -e "    short-id: \"$SID\""
     echo -e "  client-fingerprint: chrome"
     
     if [[ -n "$DOMAIN" ]]; then
+        # VLESS 使用 $DOMAIN (eljefe.cc)
         echo -e "\n- name: ElJefe_VLESS_CDN"
         echo -e "  type: vless"
         echo -e "  server: $DOMAIN"
@@ -438,6 +442,7 @@ show_yaml() {
         echo -e "    headers:"
         echo -e "      Host: $DOMAIN"
 
+        # VMess 使用 $DOMAIN (eljefe.cc)
         echo -e "\n- name: ElJefe_VMess_CDN"
         echo -e "  type: vmess"
         echo -e "  server: $DOMAIN"
@@ -510,7 +515,7 @@ toggle_bbr() {
 
 menu() {
     clear
-    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.5 Self-Healing]${PLAIN}"
+    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.6 Final Fix]${PLAIN}"
     echo -e "----------------------------------"
     echo -e " ${GREEN}1.${PLAIN} 全新安装"
     echo -e " ${GREEN}2.${PLAIN} 查看链接"
