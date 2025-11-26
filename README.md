@@ -136,10 +136,16 @@ wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh
 
 /usr/local/eljefe-v2/
 ├── xray # Xray 核心二进制文件
+
 ├── config.json # 核心配置文件
+
 ├── cert/ # SSL 证书存放目录 (private.key, fullchain.cer)
+
+
 ├── acme.sh/ # acme.sh 证书申请工具
+
 ├── html/ # 伪装网站源码
+
 └── info.txt # 用户配置信息备份 (UUID, Keys, Domain)
 
 
