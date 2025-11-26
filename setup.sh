@@ -164,28 +164,58 @@ install_xray() {
     log_info "安装/更新 Xray..."
     mkdir -p "$ROOT_DIR"
     
-    # 获取最新版本
+    # 1. 尝试获取最新版本号，获取失败则使用固定版本
     local version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    [[ -z "$version" ]] && version="v1.8.4"
-    log_info "当前最新版本: $version"
+    [[ -z "$version" ]] && version="v1.8.24"
+    log_info "目标版本: $version"
 
-    # 下载核心与校验文件
-    wget -q -O "$ROOT_DIR/xray.zip" "https://github.com/XTLS/Xray-core/releases/download/$version/Xray-linux-64.zip"
-    wget -q -O "$ROOT_DIR/xray.zip.dgst" "https://github.com/XTLS/Xray-core/releases/download/$version/Xray-linux-64.zip.dgst"
+    # 定义下载函数 (带重试)
+    download_file() {
+        local url=$1
+        local file=$2
+        wget -q --show-progress -O "$file" "$url"
+        if [ $? -ne 0 ]; then return 1; fi
+        return 0
+    }
 
-    # [安全新增] SHA256 校验
-    log_info "执行文件完整性校验..."
-    local remote_hash=$(grep "Xray-linux-64.zip" "$ROOT_DIR/xray.zip.dgst" | grep -oE '[0-9a-fA-F]{64}')
-    local local_hash=$(sha256sum "$ROOT_DIR/xray.zip" | awk '{print $1}')
+    # 2. 开始下载与校验循环
+    local retry=0
+    local max_retries=3
+    local verified=false
 
-    if [[ "$remote_hash" == "$local_hash" ]]; then
-        log_info "✔ 校验通过"
-    else
-        log_err "✘ 校验失败！下载的文件可能被篡改。"
-        rm -f "$ROOT_DIR/xray.zip"
+    while [ $retry -lt $max_retries ]; do
+        log_info "正在下载 Xray 核心 (尝试 $((retry+1))/$max_retries)..."
+        
+        # 下载核心和校验文件
+        download_file "https://github.com/XTLS/Xray-core/releases/download/$version/Xray-linux-64.zip" "$ROOT_DIR/xray.zip"
+        download_file "https://github.com/XTLS/Xray-core/releases/download/$version/Xray-linux-64.zip.dgst" "$ROOT_DIR/xray.zip.dgst"
+
+        # 校验逻辑
+        log_info "执行 SHA256 校验..."
+        local remote_hash=$(grep "Xray-linux-64.zip" "$ROOT_DIR/xray.zip.dgst" | grep -oE '[0-9a-fA-F]{64}')
+        local local_hash=$(sha256sum "$ROOT_DIR/xray.zip" | awk '{print $1}')
+        
+        if [[ -n "$remote_hash" && "$remote_hash" == "$local_hash" ]]; then
+            log_info "✔ 校验通过！"
+            verified=true
+            break
+        else
+            log_warn "校验失败 (Local: $local_hash vs Remote: $remote_hash)"
+            log_warn "可能是下载不完整，准备重试..."
+            rm -f "$ROOT_DIR/xray.zip"
+            ((retry++))
+            sleep 2
+        fi
+    done
+
+    # 3. 如果 3 次都失败了，报错退出
+    if [ "$verified" = false ]; then
+        log_err "❌ 严重错误：多次下载均无法通过完整性校验！"
+        log_err "请检查 VPS 网络连接，或 GitHub 访问是否受限。"
         exit 1
     fi
 
+    # 4. 解压安装
     unzip -o "$ROOT_DIR/xray.zip" -d "$ROOT_DIR" >/dev/null
     rm -f "$ROOT_DIR/xray.zip" "$ROOT_DIR/xray.zip.dgst"
     chmod +x "$XRAY_BIN"
@@ -193,6 +223,7 @@ install_xray() {
     # [安全新增] 移交所有权
     chown -R "$XRAY_USER:$XRAY_USER" "$ROOT_DIR"
 }
+
 
 generate_config() {
     local domain=$1
