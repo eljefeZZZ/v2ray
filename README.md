@@ -1,7 +1,8 @@
 # v2ray
 v2ray一键部署脚本，你所看到的一切均由Gmini3 Pro编写
+```
 wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh && sed -i 's/\r$//' setup.sh && chmod +x setup.sh && ./setup.sh
-
+```
 text
 # ElJefe-V2 Manager
 
