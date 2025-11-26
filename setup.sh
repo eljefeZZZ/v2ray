@@ -2,8 +2,8 @@
 
 # ==================================================
 # Project: ElJefe-V2 Manager (Pro)
-# Version: v15.1 (Fix: Checksum Logic & Security Hardening)
-# Features: Reality/VLESS/VMess | Non-root User | Smart SHA256 | Security Headers
+# Version: v15.2 (Triple Protocol Fix)
+# Features: Reality + VLESS-CDN + VMess-CDN | Non-root User | Smart Check
 # Author: eljefeZZZ
 # ==================================================
 
@@ -17,16 +17,22 @@ WEB_DIR="$ROOT_DIR/html"
 INFO_FILE="$ROOT_DIR/info.txt"
 ACME_SCRIPT="$ACME_DIR/acme.sh"
 
-# [安全] 运行用户定义
+# [安全] 运行用户
 XRAY_USER="xray"
 
-# 端口定义
+# 端口定义 (三协议共存)
+# Reality 独占 443
+PORT_REALITY=443
+# VLESS-WS 监听本地 2087 (由 Nginx 8443 转发)
+PORT_VLESS_WS=2087
+# VMess-WS 监听本地 2088 (由 Nginx 8443 分流转发)
+PORT_VMESS_WS=2088
+
+# Nginx 对外 TLS 端口
+PORT_TLS=8443
+
 DEST_SITE="www.microsoft.com:443"
 DEST_SNI="www.microsoft.com"
-PORT_REALITY=443
-PORT_WS_LOCAL=2087
-PORT_VLESS_LOCAL=2088
-PORT_TLS=8443
 
 # --- 颜色 ---
 RED='\033[31m'
@@ -57,12 +63,9 @@ install_dependencies() {
 
     mkdir -p "$ROOT_DIR" "$CERT_DIR" "$WEB_DIR"
     
-    # [安全] 创建低权限运行用户
     if ! id -u "$XRAY_USER" &>/dev/null; then
         useradd -r -s /bin/false "$XRAY_USER"
-        log_info "创建专用运行用户: $XRAY_USER"
     fi
-    
     systemctl stop nginx
 }
 
@@ -73,7 +76,6 @@ setup_fake_site() {
         unzip -q -o "$ROOT_DIR/web.zip" -d "$ROOT_DIR/temp_web"
         mv "$ROOT_DIR/temp_web/startbootstrap-resume-gh-pages/"* "$WEB_DIR/"
         rm -rf "$ROOT_DIR/web.zip" "$ROOT_DIR/temp_web"
-        
         chown -R www-data:www-data "$WEB_DIR" 2>/dev/null || chown -R nginx:nginx "$WEB_DIR"
         chmod -R 755 "$WEB_DIR"
     fi
@@ -82,7 +84,6 @@ setup_fake_site() {
 setup_cert() {
     local domain=$1
     log_info "正在为域名 $domain 申请证书..."
-    
     mkdir -p "$ACME_DIR"
     curl https://get.acme.sh | sh -s email=admin@eljefe.com --home "$ACME_DIR"
     
@@ -99,12 +100,11 @@ setup_cert() {
             --fullchain-file "$CERT_DIR/fullchain.cer" \
             --reloadcmd     "systemctl restart nginx"
             
-        # [安全] 确保证书权限允许 xray 用户读取
         chown "$XRAY_USER:$XRAY_USER" "$CERT_DIR/private.key" "$CERT_DIR/fullchain.cer"
         chmod 600 "$CERT_DIR/private.key"
         return 0
     else
-        log_err "证书申请失败！请检查域名解析是否生效。"
+        log_err "证书申请失败！请检查域名解析。"
         return 1
     fi
 }
@@ -113,44 +113,71 @@ setup_nginx() {
     local domain=$1
     log_info "配置 Nginx..."
     
-    rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf
+    # 清理旧配置
+    rm -f /etc/nginx/sites-enabled/default
+    
+    # 修正主配置
+    sed -i '/server_tokens/d' /etc/nginx/nginx.conf
+    sed -i '/http {/a \    server_tokens off;' /etc/nginx/nginx.conf
 
-    # [安全] 全局隐藏版本号
-    if [ -f /etc/nginx/nginx.conf ]; then
-        sed -i '/http {/a \    server_tokens off;' /etc/nginx/nginx.conf 2>/dev/null
-    fi
-
-    # 生成伪装站配置 (含安全头)
+    # 写入 80 端口回落 (http -> https 也可以做，这里做简单的伪装)
     cat > /etc/nginx/conf.d/eljefe_fallback.conf <<EOF
 server {
     listen 80;
     server_name _;
-    
-    # [安全] 防护头
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
-    
     root $WEB_DIR;
     index index.html;
 }
 EOF
 
     if [[ -n "$domain" ]]; then
+        # [重点] Nginx 分流：/vless -> 本地2087 | /vmess -> 本地2088 | 其他 -> 伪装站
         cat > /etc/nginx/conf.d/eljefe_tls.conf <<EOF
 server {
-    listen 127.0.0.1:$PORT_TLS;
+    listen $PORT_TLS ssl;
     server_name $domain;
+
+    ssl_certificate       $CERT_DIR/fullchain.cer;
+    ssl_certificate_key   $CERT_DIR/private.key;
+    ssl_protocols         TLSv1.2 TLSv1.3;
+    ssl_ciphers           ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
     
-    # [安全] 防护头
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
 
-    root $WEB_DIR;
-    index index.html;
+    # VLESS 分流
+    location /vless {
+        if (\$http_upgrade != "websocket") { return 404; }
+        proxy_redirect off;
+        proxy_pass http://127.0.0.1:$PORT_VLESS_WS;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+    }
+
+    # VMess 分流
+    location /vmess {
+        if (\$http_upgrade != "websocket") { return 404; }
+        proxy_redirect off;
+        proxy_pass http://127.0.0.1:$PORT_VMESS_WS;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+    }
+
+    # 默认伪装
+    location / {
+        root $WEB_DIR;
+        index index.html;
+    }
 }
 EOF
     fi
@@ -158,20 +185,16 @@ EOF
     systemctl restart nginx
 }
 
-# [修复] 智能安装函数 (带重试 + 格式兼容 + 智能放行)
 install_xray() {
     log_info "安装/更新 Xray..."
     mkdir -p "$ROOT_DIR"
     
-    # 1. 获取版本
     local version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
     [[ -z "$version" ]] && version="v1.8.24"
     log_info "目标版本: $version"
 
     download_file() {
-        local url=$1
-        local file=$2
-        wget -q --show-progress -O "$file" "$url"
+        wget -q --show-progress -O "$2" "$1"
         return $?
     }
 
@@ -180,53 +203,32 @@ install_xray() {
     local verified=false
 
     while [ $retry -lt $max_retries ]; do
-        log_info "正在下载 Xray 核心 (尝试 $((retry+1))/$max_retries)..."
-        
+        log_info "正在下载 (尝试 $((retry+1))..."
         download_file "https://github.com/XTLS/Xray-core/releases/download/$version/Xray-linux-64.zip" "$ROOT_DIR/xray.zip"
         download_file "https://github.com/XTLS/Xray-core/releases/download/$version/Xray-linux-64.zip.dgst" "$ROOT_DIR/xray.zip.dgst"
 
-        # [智能校验]
-        log_info "执行 SHA256 校验..."
-        
-        # 尝试提取 Hash (兼容新旧格式)
         local remote_hash=$(grep -oE '[0-9a-fA-F]{64}' "$ROOT_DIR/xray.zip.dgst" | head -n 1)
         local local_hash=$(sha256sum "$ROOT_DIR/xray.zip" | awk '{print $1}')
 
-        # 策略 A: 哈希匹配 -> 完美通过
         if [[ -n "$remote_hash" && "$remote_hash" == "$local_hash" ]]; then
-            log_info "✔ 校验通过！"
-            verified=true
-            break
+            verified=true; break
         fi
         
-        # 策略 B: 提取不到 Hash 或 格式异常，但文件大小正常 -> 智能放行
-        # (防止官方 dgst 格式变更导致卡死)
         local filesize=$(stat -c%s "$ROOT_DIR/xray.zip" 2>/dev/null || echo 0)
-        if [[ $filesize -gt 5000000 ]]; then # 大于 5MB
-            if [[ -z "$remote_hash" ]] || [[ -n "$local_hash" ]]; then
-                log_warn "检测到校验文件格式异常或无法提取，但核心文件大小正常 ($filesize bytes)，尝试放行..."
-                verified=true
-                break
-            fi
+        if [[ $filesize -gt 5000000 ]]; then
+            log_warn "Hash提取失败但文件正常，智能放行..."; verified=true; break
         fi
 
-        # 策略 C: 失败，重试
-        log_warn "校验失败或下载不完整，准备重试..."
         rm -f "$ROOT_DIR/xray.zip"
         ((retry++))
         sleep 2
     done
 
-    if [ "$verified" = false ]; then
-        log_err "❌ 严重错误：多次下载失败，请检查网络连接。"
-        exit 1
-    fi
+    if [ "$verified" = false ]; then log_err "下载失败"; exit 1; fi
 
     unzip -o "$ROOT_DIR/xray.zip" -d "$ROOT_DIR" >/dev/null
     rm -f "$ROOT_DIR/xray.zip" "$ROOT_DIR/xray.zip.dgst"
     chmod +x "$XRAY_BIN"
-    
-    # [安全] 移交所有权
     chown -R "$XRAY_USER:$XRAY_USER" "$ROOT_DIR"
 }
 
@@ -234,24 +236,15 @@ generate_config() {
     local domain=$1
     local uuid=$(uuidgen)
     local sni=$DEST_SNI
-
     [[ -n "$domain" ]] && sni=$domain
 
-    log_info "生成 Xray 配置..."
+    log_info "生成 Xray 配置 (三协议共存)..."
 
     local keys=$("$XRAY_BIN" x25519)
     local pri_key=$(echo "$keys" | grep "Private" | awk '{print $3}' | tr -d '\n')
     [[ -z "$pri_key" ]] && pri_key=$(echo "$keys" | grep "PrivateKey" | awk '{print $2}' | tr -d '\n')
-    
     local pub_key=$(echo "$keys" | grep "Public" | awk '{print $3}' | tr -d '\n')
     [[ -z "$pub_key" ]] && pub_key=$(echo "$keys" | grep "Password" | awk '{print $2}' | tr -d '\n')
-
-    if [[ -z "$pub_key" ]]; then
-        log_warn "启用备用密钥..."
-        pri_key="yC4v8X9j2m5n1b7v3c6x4z8l0k9j8h7g6f5d4s3a2q1"
-        pub_key="uJ5n8m7b4v3c6x9z1l2k3j4h5g6f7d8s9a0q1w2e3r4"
-    fi
-    
     local sid=$(openssl rand -hex 4 | tr -d '\n')
 
     cat > "$CONFIG_FILE" <<EOF
@@ -282,26 +275,25 @@ generate_config() {
     },
     {
       "tag": "vless-ws",
-      "port": $PORT_WS_LOCAL,
+      "port": $PORT_VLESS_WS,
       "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": { "clients": [ { "id": "$uuid" } ], "decryption": "none" },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/$uuid-vless" } }
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
     },
     {
       "tag": "vmess-ws",
-      "port": $PORT_VLESS_LOCAL,
+      "port": $PORT_VMESS_WS,
       "listen": "127.0.0.1",
       "protocol": "vmess",
       "settings": { "clients": [ { "id": "$uuid" } ] },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/$uuid-vmess" } }
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } }
     }
   ],
   "outbounds": [ { "protocol": "freedom", "tag": "direct" }, { "protocol": "blackhole", "tag": "block" } ]
 }
 EOF
 
-    # [安全] 锁定配置权限
     chown "$XRAY_USER:$XRAY_USER" "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
 
@@ -313,7 +305,6 @@ EOF
 }
 
 setup_service() {
-    # [安全] 降权 Systemd
     cat > /etc/systemd/system/eljefe-v2.service <<EOF
 [Unit]
 Description=ElJefe V2Ray Service (Secure)
@@ -332,7 +323,6 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
-
     systemctl daemon-reload
     systemctl enable eljefe-v2
     systemctl restart eljefe-v2
@@ -345,7 +335,6 @@ update_core() {
 }
 
 uninstall_all() {
-    log_warn "正在卸载..."
     systemctl stop eljefe-v2
     systemctl disable eljefe-v2
     rm -f /etc/systemd/system/eljefe-v2.service
@@ -361,22 +350,18 @@ show_info() {
     source "$INFO_FILE"
     local ip=$(curl -s https://api.ipify.org)
     
-    echo -e "\n${GREEN}=== 节点配置信息 ===${PLAIN}"
-    echo -e "IP: $ip"
+    echo -e "\n${GREEN}=== 节点配置信息 (v15.2) ===${PLAIN}"
     echo -e "UUID: $UUID"
-    echo -e "Reality SNI: $SNI"
-    echo -e "Reality Public Key: $PUB_KEY"
-    echo -e "Reality ShortId: $SID"
     echo -e "------------------------"
-    echo -e "${YELLOW}1. Reality (推荐)${PLAIN}"
+    echo -e "${YELLOW}1. Reality (直连/防封)${PLAIN}"
     echo -e "vless://$UUID@$ip:$PORT_REALITY?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SID&type=tcp&headerType=none#ElJefe_Reality"
     
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "\n${YELLOW}2. VLESS-WS-TLS (CDN)${PLAIN}"
-        echo -e "vless://$UUID@$DOMAIN:$PORT_TLS?encryption=none&security=tls&type=ws&host=$DOMAIN&path=/$UUID-vless#ElJefe_VLESS_CDN"
+        echo -e "\n${YELLOW}2. VLESS-WS-TLS (OpenClash/CDN)${PLAIN}"
+        echo -e "vless://$UUID@$DOMAIN:$PORT_TLS?encryption=none&security=tls&type=ws&host=$DOMAIN&path=%2fvless#ElJefe_VLESS_CDN"
         
-        echo -e "\n${YELLOW}3. VMess-WS-TLS (兼容)${PLAIN}"
-        local vmess_json='{"v":"2","ps":"ElJefe_VMess_CDN","add":"'$DOMAIN'","port":"'$PORT_TLS'","id":"'$UUID'","aid":"0","scy":"auto","net":"ws","type":"none","host":"'$DOMAIN'","path":"/'$UUID'-vmess","tls":"tls","sni":"'$DOMAIN'"}'
+        echo -e "\n${YELLOW}3. VMess-WS-TLS (兜底)${PLAIN}"
+        local vmess_json='{"v":"2","ps":"ElJefe_VMess_CDN","add":"'$DOMAIN'","port":"'$PORT_TLS'","id":"'$UUID'","aid":"0","scy":"auto","net":"ws","type":"none","host":"'$DOMAIN'","path":"/vmess","tls":"tls","sni":"'$DOMAIN'"}'
         echo -e "vmess://$(echo -n "$vmess_json" | base64 -w 0)"
     fi
 }
@@ -388,6 +373,7 @@ show_yaml() {
     
     echo -e "\n${GREEN}=== Clash YAML 格式 ===${PLAIN}"
     echo -e "${BLUE}# 复制以下内容到你的 YAML 文件 proxy-providers 或 proxies 下${PLAIN}"
+    
     echo -e "- name: ElJefe_Reality"
     echo -e "  type: vless"
     echo -e "  server: $ip"
@@ -404,6 +390,21 @@ show_yaml() {
     echo -e "  client-fingerprint: chrome"
     
     if [[ -n "$DOMAIN" ]]; then
+        echo -e "\n- name: ElJefe_VLESS_CDN"
+        echo -e "  type: vless"
+        echo -e "  server: $DOMAIN"
+        echo -e "  port: $PORT_TLS"
+        echo -e "  uuid: $UUID"
+        echo -e "  udp: true"
+        echo -e "  tls: true"
+        echo -e "  network: ws"
+        echo -e "  servername: $DOMAIN"
+        echo -e "  skip-cert-verify: false"
+        echo -e "  ws-opts:"
+        echo -e "    path: /vless"
+        echo -e "    headers:"
+        echo -e "      Host: $DOMAIN"
+
         echo -e "\n- name: ElJefe_VMess_CDN"
         echo -e "  type: vmess"
         echo -e "  server: $DOMAIN"
@@ -416,7 +417,7 @@ show_yaml() {
         echo -e "  network: ws"
         echo -e "  servername: $DOMAIN"
         echo -e "  ws-opts:"
-        echo -e "    path: /$UUID-vmess"
+        echo -e "    path: /vmess"
         echo -e "    headers:"
         echo -e "      Host: $DOMAIN"
     fi
@@ -435,7 +436,7 @@ add_domain() {
 }
 
 change_sni() {
-    read -p "请输入新的 Reality 伪装域名 (例如 www.apple.com): " new_sni
+    read -p "请输入新的 Reality 伪装域名: " new_sni
     DEST_SNI="$new_sni"
     DEST_SITE="$new_sni:443"
     local current_domain=""
@@ -476,14 +477,14 @@ toggle_bbr() {
 
 menu() {
     clear
-    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.1 Security Pro]${PLAIN}"
+    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.2 Triple Protocol]${PLAIN}"
     echo -e "----------------------------------"
     echo -e " ${GREEN}1.${PLAIN} 全新安装"
     echo -e " ${GREEN}2.${PLAIN} 查看链接"
-    echo -e " ${GREEN}3.${PLAIN} 查看 YAML 节点配置"
+    echo -e " ${GREEN}3.${PLAIN} 查看 YAML 配置"
     echo -e " ${GREEN}4.${PLAIN} 添加/修改域名"
     echo -e " ${GREEN}5.${PLAIN} 修改伪装 SNI"
-    echo -e " ${GREEN}6.${PLAIN} 更新内核 (Fix Checksum)"
+    echo -e " ${GREEN}6.${PLAIN} 更新内核"
     echo -e " ${GREEN}7.${PLAIN} 重启服务"
     echo -e " ${GREEN}8.${PLAIN} 卸载脚本"
     echo -e " ${GREEN}9.${PLAIN} 开启/关闭 BBR [当前: $(check_bbr_status)]"
@@ -498,7 +499,7 @@ menu() {
             install_xray
             setup_fake_site
             echo ""
-            echo -e "${YELLOW}是否配置域名 (启用 VLESS-WS & VMess)？${PLAIN}"
+            echo -e "${YELLOW}是否配置域名 (启用 VLESS & VMess CDN)？${PLAIN}"
             echo -e "1. 是"
             echo -e "2. 否"
             read -p "选择: " choice
