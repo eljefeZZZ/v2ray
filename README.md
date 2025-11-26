@@ -102,9 +102,9 @@ text
 
 以后任何时候，你只需输入以下命令即可唤出管理菜单：
 
+```
 ./setup.sh
-
-text
+```
 
 ### 常用功能
 - **查看 YAML 配置 (Show YAML)**
@@ -142,7 +142,6 @@ text
 ├── html/ # 伪装网站源码
 └── info.txt # 用户配置信息备份 (UUID, Keys, Domain)
 
-text
 
 ---
 
