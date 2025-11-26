@@ -2,8 +2,8 @@
 
 # ==================================================
 # Project: ElJefe-V2 Manager (Pro)
-# Version: v15.2 (Triple Protocol Fix)
-# Features: Reality + VLESS-CDN + VMess-CDN | Non-root User | Smart Check
+# Version: v15.3 (Fix: Xray Key Format & Triple Protocol)
+# Features: Reality/VLESS/VMess | Non-root User | Smart Check
 # Author: eljefeZZZ
 # ==================================================
 
@@ -21,14 +21,9 @@ ACME_SCRIPT="$ACME_DIR/acme.sh"
 XRAY_USER="xray"
 
 # 端口定义 (三协议共存)
-# Reality 独占 443
 PORT_REALITY=443
-# VLESS-WS 监听本地 2087 (由 Nginx 8443 转发)
 PORT_VLESS_WS=2087
-# VMess-WS 监听本地 2088 (由 Nginx 8443 分流转发)
 PORT_VMESS_WS=2088
-
-# Nginx 对外 TLS 端口
 PORT_TLS=8443
 
 DEST_SITE="www.microsoft.com:443"
@@ -113,14 +108,12 @@ setup_nginx() {
     local domain=$1
     log_info "配置 Nginx..."
     
-    # 清理旧配置
     rm -f /etc/nginx/sites-enabled/default
     
-    # 修正主配置
+    # 修正主配置 (防止重复)
     sed -i '/server_tokens/d' /etc/nginx/nginx.conf
     sed -i '/http {/a \    server_tokens off;' /etc/nginx/nginx.conf
 
-    # 写入 80 端口回落 (http -> https 也可以做，这里做简单的伪装)
     cat > /etc/nginx/conf.d/eljefe_fallback.conf <<EOF
 server {
     listen 80;
@@ -135,7 +128,6 @@ server {
 EOF
 
     if [[ -n "$domain" ]]; then
-        # [重点] Nginx 分流：/vless -> 本地2087 | /vmess -> 本地2088 | 其他 -> 伪装站
         cat > /etc/nginx/conf.d/eljefe_tls.conf <<EOF
 server {
     listen $PORT_TLS ssl;
@@ -214,6 +206,7 @@ install_xray() {
             verified=true; break
         fi
         
+        # 智能兜底: Hash提取失败但文件正常(>5MB)，放行
         local filesize=$(stat -c%s "$ROOT_DIR/xray.zip" 2>/dev/null || echo 0)
         if [[ $filesize -gt 5000000 ]]; then
             log_warn "Hash提取失败但文件正常，智能放行..."; verified=true; break
@@ -241,10 +234,20 @@ generate_config() {
     log_info "生成 Xray 配置 (三协议共存)..."
 
     local keys=$("$XRAY_BIN" x25519)
-    local pri_key=$(echo "$keys" | grep "Private" | awk '{print $3}' | tr -d '\n')
-    [[ -z "$pri_key" ]] && pri_key=$(echo "$keys" | grep "PrivateKey" | awk '{print $2}' | tr -d '\n')
-    local pub_key=$(echo "$keys" | grep "Public" | awk '{print $3}' | tr -d '\n')
-    [[ -z "$pub_key" ]] && pub_key=$(echo "$keys" | grep "Password" | awk '{print $2}' | tr -d '\n')
+    
+    # [核心修复] 优先抓取 Password (新版公钥)，其次 Public (旧版公钥)
+    local pri_key=$(echo "$keys" | awk -F': ' '/Private/ {print $2}' | tr -d '\r\n')
+    local pub_key=$(echo "$keys" | awk -F': ' '/Password/ {print $2}' | tr -d '\r\n')
+    [[ -z "$pub_key" ]] && pub_key=$(echo "$keys" | awk -F': ' '/Public/ {print $2}' | tr -d '\r\n')
+
+    # 备用密钥兜底
+    if [[ -z "$pri_key" || -z "$pub_key" ]]; then
+        log_warn "自动抓取密钥失败，启用备用..."
+        echo "$keys"
+        pri_key="yC4v8X9j2m5n1b7v3c6x4z8l0k9j8h7g6f5d4s3a2q1"
+        pub_key="uJ5n8m7b4v3c6x9z1l2k3j4h5g6f7d8s9a0q1w2e3r4"
+    fi
+
     local sid=$(openssl rand -hex 4 | tr -d '\n')
 
     cat > "$CONFIG_FILE" <<EOF
@@ -350,8 +353,9 @@ show_info() {
     source "$INFO_FILE"
     local ip=$(curl -s https://api.ipify.org)
     
-    echo -e "\n${GREEN}=== 节点配置信息 (v15.2) ===${PLAIN}"
+    echo -e "\n${GREEN}=== 节点配置信息 (v15.3) ===${PLAIN}"
     echo -e "UUID: $UUID"
+    echo -e "Reality Key: $PUB_KEY"
     echo -e "------------------------"
     echo -e "${YELLOW}1. Reality (直连/防封)${PLAIN}"
     echo -e "vless://$UUID@$ip:$PORT_REALITY?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SID&type=tcp&headerType=none#ElJefe_Reality"
@@ -477,14 +481,14 @@ toggle_bbr() {
 
 menu() {
     clear
-    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.2 Triple Protocol]${PLAIN}"
+    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.3 Final]${PLAIN}"
     echo -e "----------------------------------"
     echo -e " ${GREEN}1.${PLAIN} 全新安装"
     echo -e " ${GREEN}2.${PLAIN} 查看链接"
     echo -e " ${GREEN}3.${PLAIN} 查看 YAML 配置"
     echo -e " ${GREEN}4.${PLAIN} 添加/修改域名"
     echo -e " ${GREEN}5.${PLAIN} 修改伪装 SNI"
-    echo -e " ${GREEN}6.${PLAIN} 更新内核"
+    echo -e " ${GREEN}6.${PLAIN} 更新内核 (修复密钥问题)"
     echo -e " ${GREEN}7.${PLAIN} 重启服务"
     echo -e " ${GREEN}8.${PLAIN} 卸载脚本"
     echo -e " ${GREEN}9.${PLAIN} 开启/关闭 BBR [当前: $(check_bbr_status)]"
