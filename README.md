@@ -135,6 +135,7 @@ wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh
 安装后的所有文件均位于 `/usr/local/eljefe-v2`：
 
 /usr/local/eljefe-v2/
+
 ├── xray # Xray 核心二进制文件
 
 ├── config.json # 核心配置文件
