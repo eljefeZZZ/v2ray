@@ -2,8 +2,8 @@
 
 # ==================================================
 # Project: ElJefe-V2 Manager (Pro)
-# Version: v15.3 (Fix: Xray Key Format & Triple Protocol)
-# Features: Reality/VLESS/VMess | Non-root User | Smart Check
+# Version: v15.4 (Fix: Port Conflict Prevention)
+# Features: Reality/VLESS/VMess | Non-root User | Auto-Kill 443
 # Author: eljefeZZZ
 # ==================================================
 
@@ -24,7 +24,7 @@ XRAY_USER="xray"
 PORT_REALITY=443
 PORT_VLESS_WS=2087
 PORT_VMESS_WS=2088
-PORT_TLS=8443
+PORT_TLS=8443  # Nginx 监听端口，避开 443
 
 DEST_SITE="www.microsoft.com:443"
 DEST_SNI="www.microsoft.com"
@@ -48,10 +48,10 @@ install_dependencies() {
     log_info "安装依赖..."
     if [ -f /etc/debian_version ]; then
         apt-get update -y
-        apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat
+        apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat psmisc
     elif [ -f /etc/redhat-release ]; then
         yum update -y
-        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof
+        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof psmisc
     else
         log_err "不支持的系统" && exit 1
     fi
@@ -61,6 +61,10 @@ install_dependencies() {
     if ! id -u "$XRAY_USER" &>/dev/null; then
         useradd -r -s /bin/false "$XRAY_USER"
     fi
+    
+    # [核心优化] 安装完依赖立即清理 Nginx 默认配置
+    rm -f /etc/nginx/sites-enabled/default
+    rm -f /etc/nginx/conf.d/default.conf
     systemctl stop nginx
 }
 
@@ -82,9 +86,9 @@ setup_cert() {
     mkdir -p "$ACME_DIR"
     curl https://get.acme.sh | sh -s email=admin@eljefe.com --home "$ACME_DIR"
     
-    log_info "释放 80 端口..."
+    # [核心优化] 强力释放 80 端口
     systemctl stop nginx
-    if lsof -i :80 > /dev/null; then kill -9 $(lsof -t -i:80); fi
+    fuser -k 80/tcp
     
     "$ACME_SCRIPT" --issue -d "$domain" --standalone --keylength ec-256 --force
     
@@ -108,6 +112,7 @@ setup_nginx() {
     local domain=$1
     log_info "配置 Nginx..."
     
+    # [核心优化] 再次清理默认配置
     rm -f /etc/nginx/sites-enabled/default
     
     # 修正主配置 (防止重复)
@@ -143,7 +148,6 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
 
-    # VLESS 分流
     location /vless {
         if (\$http_upgrade != "websocket") { return 404; }
         proxy_redirect off;
@@ -154,7 +158,6 @@ server {
         proxy_set_header Host \$http_host;
     }
 
-    # VMess 分流
     location /vmess {
         if (\$http_upgrade != "websocket") { return 404; }
         proxy_redirect off;
@@ -165,7 +168,6 @@ server {
         proxy_set_header Host \$http_host;
     }
 
-    # 默认伪装
     location / {
         root $WEB_DIR;
         index index.html;
@@ -206,7 +208,6 @@ install_xray() {
             verified=true; break
         fi
         
-        # 智能兜底: Hash提取失败但文件正常(>5MB)，放行
         local filesize=$(stat -c%s "$ROOT_DIR/xray.zip" 2>/dev/null || echo 0)
         if [[ $filesize -gt 5000000 ]]; then
             log_warn "Hash提取失败但文件正常，智能放行..."; verified=true; break
@@ -235,15 +236,13 @@ generate_config() {
 
     local keys=$("$XRAY_BIN" x25519)
     
-    # [核心修复] 优先抓取 Password (新版公钥)，其次 Public (旧版公钥)
+    # [密钥抓取修复]
     local pri_key=$(echo "$keys" | awk -F': ' '/Private/ {print $2}' | tr -d '\r\n')
     local pub_key=$(echo "$keys" | awk -F': ' '/Password/ {print $2}' | tr -d '\r\n')
     [[ -z "$pub_key" ]] && pub_key=$(echo "$keys" | awk -F': ' '/Public/ {print $2}' | tr -d '\r\n')
 
-    # 备用密钥兜底
     if [[ -z "$pri_key" || -z "$pub_key" ]]; then
         log_warn "自动抓取密钥失败，启用备用..."
-        echo "$keys"
         pri_key="yC4v8X9j2m5n1b7v3c6x4z8l0k9j8h7g6f5d4s3a2q1"
         pub_key="uJ5n8m7b4v3c6x9z1l2k3j4h5g6f7d8s9a0q1w2e3r4"
     fi
@@ -327,6 +326,10 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
+    
+    # [核心优化] 启动前强制杀掉占用 443 的进程 (防止 Nginx 抢占)
+    fuser -k 443/tcp >/dev/null 2>&1
+    
     systemctl enable eljefe-v2
     systemctl restart eljefe-v2
 }
@@ -353,7 +356,7 @@ show_info() {
     source "$INFO_FILE"
     local ip=$(curl -s https://api.ipify.org)
     
-    echo -e "\n${GREEN}=== 节点配置信息 (v15.3) ===${PLAIN}"
+    echo -e "\n${GREEN}=== 节点配置信息 (v15.4) ===${PLAIN}"
     echo -e "UUID: $UUID"
     echo -e "Reality Key: $PUB_KEY"
     echo -e "------------------------"
@@ -481,14 +484,14 @@ toggle_bbr() {
 
 menu() {
     clear
-    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.3 Final]${PLAIN}"
+    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.4 Final]${PLAIN}"
     echo -e "----------------------------------"
     echo -e " ${GREEN}1.${PLAIN} 全新安装"
     echo -e " ${GREEN}2.${PLAIN} 查看链接"
     echo -e " ${GREEN}3.${PLAIN} 查看 YAML 配置"
     echo -e " ${GREEN}4.${PLAIN} 添加/修改域名"
     echo -e " ${GREEN}5.${PLAIN} 修改伪装 SNI"
-    echo -e " ${GREEN}6.${PLAIN} 更新内核 (修复密钥问题)"
+    echo -e " ${GREEN}6.${PLAIN} 更新内核 (Fix Key)"
     echo -e " ${GREEN}7.${PLAIN} 重启服务"
     echo -e " ${GREEN}8.${PLAIN} 卸载脚本"
     echo -e " ${GREEN}9.${PLAIN} 开启/关闭 BBR [当前: $(check_bbr_status)]"
