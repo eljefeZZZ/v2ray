@@ -58,14 +58,14 @@ wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh
 ### 3. 安装选项说明
 脚本运行后会自动安装依赖、Xray 内核和 Nginx。最后会询问你：
 
+```
 [INFO] 部署伪装站点...
 是否配置域名 (启用 VLESS & VMess CDN)？
 
 是
 
 否
-
-text
+```
 
 - **如果你没有域名**：输入 `2` 并回车。
   - *脚本将只安装 Reality 主协议，通过 IP 直连，速度最快。*
