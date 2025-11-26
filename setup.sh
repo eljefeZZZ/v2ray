@@ -422,7 +422,7 @@ menu() {
     echo -e "  ${GREEN}6.${PLAIN} 更新内核"
     echo -e "  ${GREEN}7.${PLAIN} 重启服务"
     echo -e "  ${GREEN}8.${PLAIN} 卸载脚本"
-    echo -e "${GREEN}9.${PLAIN} 开启/关闭 BBR [当前: $(check_bbr_status)]"
+    echo -e "  ${GREEN}9.${PLAIN} 开启/关闭 BBR [当前: $(check_bbr_status)]"
     echo -e "  ${GREEN}0.${PLAIN} 退出"
     echo -e "----------------------------------"
     read -p "请输入选项: " num
@@ -476,3 +476,4 @@ if [[ $# > 0 ]]; then
 else
     menu
 fi
+
