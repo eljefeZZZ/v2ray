@@ -50,9 +50,10 @@ wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh
 ### 2. 一键安装
 复制以下命令并粘贴到终端中执行：
 
+```
 wget -O setup.sh https://github.com/eljefeZZZ/v2ray/raw/refs/heads/main/setup.sh && sed -i 's/\r$//' setup.sh && chmod +x setup.sh && ./setup.sh install
+```
 
-text
 
 ### 3. 安装选项说明
 脚本运行后会自动安装依赖、Xray 内核和 Nginx。最后会询问你：
