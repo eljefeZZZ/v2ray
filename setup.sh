@@ -380,6 +380,36 @@ uninstall_all() {
     log_info "已卸载"
 }
 
+
+# --- BBR Management ---
+check_bbr_status() {
+    local bbr_status
+    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        bbr_status="${GREEN}已开启${PLAIN}"
+    else
+        bbr_status="${RED}未开启${PLAIN}"
+    fi
+    echo "$bbr_status"
+}
+
+toggle_bbr() {
+    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        echo -e "${YELLOW}当前 BBR 已开启，正在关闭...${PLAIN}"
+        sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
+        sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+        echo -e "${GREEN}BBR 已关闭${PLAIN}"
+    else
+        echo -e "${YELLOW}当前 BBR 未开启，正在开启...${PLAIN}"
+        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+        echo -e "${GREEN}BBR 已开启${PLAIN}"
+    fi
+    read -p "按回车键返回菜单..."
+    menu
+}
+
 menu() {
     clear
     echo -e "  ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v13.0 Final Fix]${PLAIN}"
@@ -392,6 +422,7 @@ menu() {
     echo -e "  ${GREEN}6.${PLAIN} 更新内核"
     echo -e "  ${GREEN}7.${PLAIN} 重启服务"
     echo -e "  ${GREEN}8.${PLAIN} 卸载脚本"
+    echo -e "${GREEN}9.${PLAIN} 开启/关闭 BBR [当前: $(check_bbr_status)]"
     echo -e "  ${GREEN}0.${PLAIN} 退出"
     echo -e "----------------------------------"
     read -p "请输入选项: " num
