@@ -389,7 +389,8 @@ install_warp_client() {
     if [ -f /etc/debian_version ]; then
         apt-get update -y
         apt-get install -y curl gpg lsb-release
-
+        # 如果 keyring 已存在先删除，防止冲突
+        rm -f /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
         curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
             | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
 
@@ -406,38 +407,55 @@ install_warp_client() {
         return 1
     fi
 
-    # 注册 & 设为代理模式
+    # 停止 WARP 服务以确保配置生效
+    warp-cli disconnect >/dev/null 2>&1
+
     log_info "注册 WARP 账户..."
-    if warp-cli --help 2>/dev/null | grep -q "registration"; then
-        warp-cli registration new || warp-cli register
+    # 兼容新旧版本命令
+    if warp-cli --help | grep -q "registration"; then
+         # 新版命令可能需要接受条款
+         echo "y" | warp-cli registration new
     else
-        warp-cli register
+         echo "y" | warp-cli register
     fi
 
     log_info "设置代理模式..."
-    if warp-cli --help 2>/dev/null | grep -q "mode proxy"; then
+    # 关键修复：优先尝试新版命令结构
+    if warp-cli --help | grep -q "mode proxy"; then
         warp-cli mode proxy
     else
         warp-cli set-mode proxy
     fi
 
-    if warp-cli --help 2>/dev/null | grep -q "proxy port"; then
+    # 关键修复：设置端口
+    if warp-cli --help | grep -q "proxy port"; then
         warp-cli proxy port $WARP_PORT
     else
         warp-cli set-proxy-port $WARP_PORT
     fi
 
+    # 启动连接
+    log_info "启动 WARP 连接..."
     warp-cli connect
-    warp-cli enable-always-on
+    
+    # 旧版保活命令，新版报错则忽略
+    warp-cli enable-always-on >/dev/null 2>&1 || true
 
     sleep 5
+    
+    # 检查代理是否生效
     local warp_ip
-    warp_ip=$(curl -s -x socks5h://$WARP_SOCKS_ADDR:$WARP_PORT https://ifconfig.me || true)
+    warp_ip=$(curl -s -x socks5h://$WARP_SOCKS_ADDR:$WARP_PORT https://ifconfig.me --connect-timeout 5 || true)
 
     if [[ -n "$warp_ip" ]]; then
-        log_info "WARP 安装并连接成功，当前出口 IP: $warp_ip"
+        log_info "WARP 安装并连接成功！"
+        log_info "SOCKS5 代理端口: $WARP_PORT"
+        log_info "WARP 出口 IP: $warp_ip"
     else
-        log_warn "WARP 看起来没连上，请稍后执行 warp-cli status 排查"
+        log_warn "WARP 未检测到出口 IP，可能配置失败。"
+        log_warn "为防止 SSH 断连，正在断开 WARP..."
+        warp-cli disconnect
+        log_err "请检查日志或手动尝试: warp-cli status"
     fi
 }
 
