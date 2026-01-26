@@ -26,8 +26,8 @@ PORT_VLESS_WS=2087
 PORT_VMESS_WS=2088
 PORT_TLS=8443  # Nginx 监听端口，避开 443
 
-DEST_SITE="www.microsoft.com:443"
-DEST_SNI="www.microsoft.com"
+DEST_SITE="itunes.apple.com:443"
+DEST_SNI="itunes.apple.com"
 
 # --- 颜色 ---
 RED='\033[31m'
