@@ -2,9 +2,9 @@
 
 # ==================================================
 # Project: ElJefe-V2 Manager (Pro)
-# Version: v15.6 (Final Fix: Reality YAML ServerName)
-# Features: Reality/VLESS/VMess | Self-Healing | YAML Fix
-# Author: eljefeZZZ
+# Version: v16.0 (Unlock DNS & Sniffing Fix)
+# Features: Reality/VLESS/VMess | Unlock DNS Manager | IPv4 Force
+# Author: eljefeZZZ & Gemini Copilot
 # ==================================================
 
 # --- 目录结构 ---
@@ -26,8 +26,8 @@ PORT_VLESS_WS=2087
 PORT_VMESS_WS=2088
 PORT_TLS=8443  # Nginx 监听端口，避开 443
 
-DEST_SITE="itunes.apple.com:443"
-DEST_SNI="itunes.apple.com"
+DEST_SITE="www.microsoft.com:443"
+DEST_SNI="www.microsoft.com"
 
 # --- 颜色 ---
 RED='\033[31m'
@@ -48,10 +48,10 @@ install_dependencies() {
     log_info "安装依赖..."
     if [ -f /etc/debian_version ]; then
         apt-get update -y
-        apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat psmisc
+        apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat psmisc dnsutils
     elif [ -f /etc/redhat-release ]; then
         yum update -y
-        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof psmisc
+        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof psmisc bind-utils
     else
         log_err "不支持的系统" && exit 1
     fi
@@ -112,7 +112,6 @@ setup_nginx() {
     local domain=$1
     log_info "配置 Nginx..."
     
-    # [v15.5 核心修复] 自动修复缺失的 nginx.conf
     if [ ! -f /etc/nginx/nginx.conf ]; then
         log_warn "检测到 nginx.conf 缺失，正在重建..."
         mkdir -p /etc/nginx
@@ -139,16 +138,13 @@ http {
 EOF
     fi
 
-    # 清理默认配置
     rm -f /etc/nginx/sites-enabled/default
     
-    # 修正主配置 (防止重复 + 安全检查)
     sed -i '/server_tokens/d' /etc/nginx/nginx.conf
     if grep -q "http {" /etc/nginx/nginx.conf; then
         sed -i '/http {/a \    server_tokens off;' /etc/nginx/nginx.conf
     fi
 
-    # 写入 80 回落配置
     cat > /etc/nginx/conf.d/eljefe_fallback.conf <<EOF
 server {
     listen 80;
@@ -256,13 +252,24 @@ install_xray() {
     chown -R "$XRAY_USER:$XRAY_USER" "$ROOT_DIR"
 }
 
+# [核心修改] 整合 Sniffing, IPv4, DNS 解锁逻辑的配置生成函数
 generate_config() {
     local domain=$1
+    local dns_ip=$2  # 接收第二个参数：解锁 DNS 的 IP
+
+    # 如果没传参数，尝试从 info 文件读，再不行就默认 localhost
+    if [[ -z "$dns_ip" ]]; then
+        if [ -f "$INFO_FILE" ]; then
+            dns_ip=$(grep "UNLOCK_DNS=" "$INFO_FILE" | cut -d= -f2)
+        fi
+        [[ -z "$dns_ip" ]] && dns_ip="localhost"
+    fi
+
     local uuid=$(uuidgen)
     local sni=$DEST_SNI
-    [[ -n "$domain" ]] && sni=$domain  # 这里只是为了兼容旧逻辑，实际上 Reality 的 sni 应该固定
+    [[ -n "$domain" ]] && sni=$domain
 
-    log_info "生成 Xray 配置 (三协议共存)..."
+    log_info "生成 Xray 配置 (集成 DNS 解锁 [$dns_ip] & Sniffing Fix)..."
 
     local keys=$("$XRAY_BIN" x25519)
     local pri_key=$(echo "$keys" | awk -F': ' '/Private/ {print $2}' | tr -d '\r\n')
@@ -277,8 +284,30 @@ generate_config() {
 
     local sid=$(openssl rand -hex 4 | tr -d '\n')
 
-    # 写入 config.json
-    # 注意：realitySettings 中的 dest 和 serverNames 必须固定为微软
+    # --- 构建动态 DNS 配置块 ---
+    local dns_config=""
+    if [[ "$dns_ip" == "localhost" ]]; then
+        # 原生模式
+        dns_config='"servers": [ "localhost" ]'
+    else
+        # 解锁模式 (Netflix, Disney, OpenAI 等)
+        dns_config='"servers": [
+      {
+        "address": "'$dns_ip'",
+        "port": 53,
+        "domains": [
+          "geosite:netflix",
+          "geosite:disney",
+          "geosite:hbo",
+          "geosite:primevideo",
+          "geosite:openai"
+        ]
+      },
+      "localhost"
+    ]'
+    fi
+
+    # --- 写入 config.json (基于调试成功的完美模板) ---
     cat > "$CONFIG_FILE" <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -311,7 +340,8 @@ generate_config() {
       "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": { "clients": [ { "id": "$uuid" } ], "decryption": "none" },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } },
+      "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] }
     },
     {
       "tag": "vmess-ws",
@@ -322,7 +352,23 @@ generate_config() {
       "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } }
     }
   ],
-  "outbounds": [ { "protocol": "freedom", "tag": "direct" }, { "protocol": "blackhole", "tag": "block" } ]
+  "outbounds": [
+    { 
+      "protocol": "freedom", 
+      "tag": "direct", 
+      "settings": { "domainStrategy": "UseIPv4" } 
+    }, 
+    { "protocol": "blackhole", "tag": "block" } 
+  ],
+  "dns": {
+    $dns_config
+  },
+  "routing": {
+    "domainStrategy": "IPOnDemand",
+    "rules": [
+      { "type": "field", "outboundTag": "block", "ip": [ "geoip:private" ] }
+    ]
+  }
 }
 EOF
 
@@ -333,7 +379,8 @@ EOF
     echo "PUB_KEY=$pub_key" >> "$INFO_FILE"
     echo "SID=$sid" >> "$INFO_FILE"
     echo "DOMAIN=$domain" >> "$INFO_FILE"
-    echo "SNI=$DEST_SNI" >> "$INFO_FILE"  # 强制保存微软 SNI
+    echo "SNI=$DEST_SNI" >> "$INFO_FILE"
+    echo "UNLOCK_DNS=$dns_ip" >> "$INFO_FILE" # 保存 DNS 状态以便菜单读取
 }
 
 setup_service() {
@@ -383,12 +430,12 @@ show_info() {
     source "$INFO_FILE"
     local ip=$(curl -s https://api.ipify.org)
     
-    echo -e "\n${GREEN}=== 节点配置信息 (v15.6) ===${PLAIN}"
+    echo -e "\n${GREEN}=== 节点配置信息 (v16.0) ===${PLAIN}"
     echo -e "UUID: $UUID"
     echo -e "Reality Key: $PUB_KEY"
+    echo -e "解锁 DNS: ${YELLOW}${UNLOCK_DNS:-localhost}${PLAIN}"
     echo -e "------------------------"
     echo -e "${YELLOW}1. Reality (直连/防封)${PLAIN}"
-    # 这里 SNI 必须用 $DEST_SNI (www.microsoft.com)
     echo -e "vless://$UUID@$ip:$PORT_REALITY?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$DEST_SNI&fp=chrome&pbk=$PUB_KEY&sid=$SID&type=tcp&headerType=none#ElJefe_Reality"
     
     if [[ -n "$DOMAIN" ]]; then
@@ -409,7 +456,6 @@ show_yaml() {
     echo -e "\n${GREEN}=== Clash YAML 格式 ===${PLAIN}"
     echo -e "${BLUE}# 复制以下内容到你的 YAML 文件 proxy-providers 或 proxies 下${PLAIN}"
     
-    # [核心修正] servername 使用 $DEST_SNI (www.microsoft.com)
     echo -e "- name: ElJefe_Reality"
     echo -e "  type: vless"
     echo -e "  server: $ip"
@@ -426,7 +472,6 @@ show_yaml() {
     echo -e "  client-fingerprint: chrome"
     
     if [[ -n "$DOMAIN" ]]; then
-        # VLESS 使用 $DOMAIN (eljefe.cc)
         echo -e "\n- name: ElJefe_VLESS_CDN"
         echo -e "  type: vless"
         echo -e "  server: $DOMAIN"
@@ -442,7 +487,6 @@ show_yaml() {
         echo -e "    headers:"
         echo -e "      Host: $DOMAIN"
 
-        # VMess 使用 $DOMAIN (eljefe.cc)
         echo -e "\n- name: ElJefe_VMess_CDN"
         echo -e "  type: vmess"
         echo -e "  server: $DOMAIN"
@@ -487,6 +531,35 @@ change_sni() {
     show_info
 }
 
+# [新增] 修改解锁 DNS
+modify_dns() {
+    echo -e "${YELLOW}请输入新的解锁 DNS IP (例如 203.9.150.233)${PLAIN}"
+    read -p "IP: " new_dns
+    if [[ -z "$new_dns" ]]; then log_err "IP 不能为空"; return; fi
+    
+    local current_domain=""
+    if [ -f "$INFO_FILE" ]; then
+        current_domain=$(grep "DOMAIN=" "$INFO_FILE" | cut -d= -f2)
+    fi
+    
+    generate_config "$current_domain" "$new_dns"
+    systemctl restart eljefe-v2
+    log_info "DNS 已修改为: $new_dns"
+    log_info "请记得在 DNS 服务商后台重新绑定本 VPS IP！"
+}
+
+# [新增] 恢复原生 DNS
+remove_dns() {
+    local current_domain=""
+    if [ -f "$INFO_FILE" ]; then
+        current_domain=$(grep "DOMAIN=" "$INFO_FILE" | cut -d= -f2)
+    fi
+    
+    generate_config "$current_domain" "localhost"
+    systemctl restart eljefe-v2
+    log_info "已恢复为本机原生 DNS (localhost)"
+}
+
 check_bbr_status() {
     local param=$(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}')
     if [[ "$param" == "bbr" ]]; then
@@ -515,7 +588,14 @@ toggle_bbr() {
 
 menu() {
     clear
-    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.6 Final Fix]${PLAIN}"
+    # 读取当前 DNS 状态用于显示
+    local curr_dns="未知"
+    if [ -f "$INFO_FILE" ]; then
+        curr_dns=$(grep "UNLOCK_DNS=" "$INFO_FILE" | cut -d= -f2)
+        [[ -z "$curr_dns" ]] && curr_dns="localhost"
+    fi
+
+    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v16.0 Unlock Pro]${PLAIN}"
     echo -e "----------------------------------"
     echo -e " ${GREEN}1.${PLAIN} 全新安装"
     echo -e " ${GREEN}2.${PLAIN} 查看链接"
@@ -526,6 +606,10 @@ menu() {
     echo -e " ${GREEN}7.${PLAIN} 重启服务"
     echo -e " ${GREEN}8.${PLAIN} 卸载脚本"
     echo -e " ${GREEN}9.${PLAIN} 开启/关闭 BBR [当前: $(check_bbr_status)]"
+    echo -e "----------------------------------"
+    echo -e " ${YELLOW}10.${PLAIN} 修改解锁 DNS [当前: ${BLUE}$curr_dns${PLAIN}]"
+    echo -e " ${YELLOW}11.${PLAIN} 恢复原生 DNS (localhost)"
+    echo -e "----------------------------------"
     echo -e " ${GREEN}0.${PLAIN} 退出"
     echo -e "----------------------------------"
     read -p "请输入选项: " num
@@ -541,20 +625,35 @@ menu() {
             echo -e "1. 是"
             echo -e "2. 否"
             read -p "选择: " choice
+            
+            local my_domain=""
             if [[ "$choice" == "1" ]]; then
                 read -p "请输入域名: " my_domain
                 setup_cert "$my_domain"
                 if [ $? -eq 0 ]; then
                     setup_nginx "$my_domain"
-                    generate_config "$my_domain"
                 else
                     setup_nginx ""
-                    generate_config ""
+                    my_domain=""
                 fi
             else
                 setup_nginx ""
-                generate_config ""
             fi
+
+            # --- [核心新增] 安装时询问解锁 DNS ---
+            echo ""
+            echo -e "${YELLOW}是否配置流媒体解锁 DNS？${PLAIN}"
+            echo -e "1. 是 (我有解锁 DNS IP)"
+            echo -e "2. 否 (使用本机原生 IP)"
+            read -p "选择: " dns_choice
+            local final_dns="localhost"
+            if [[ "$dns_choice" == "1" ]]; then
+                read -p "请输入解锁 DNS IP (如 203.9.150.233): " user_dns
+                [[ -n "$user_dns" ]] && final_dns="$user_dns"
+            fi
+            # -----------------------------------
+
+            generate_config "$my_domain" "$final_dns"
             setup_service
             show_info
             ;;
@@ -566,6 +665,8 @@ menu() {
         7) systemctl restart eljefe-v2 && log_info "服务已重启" ;;
         8) uninstall_all ;;
         9) toggle_bbr ;;
+        10) modify_dns ;;
+        11) remove_dns ;;
         0) exit 0 ;;
         *) log_err "无效选项" ;;
     esac
