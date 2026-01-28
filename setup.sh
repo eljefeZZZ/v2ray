@@ -378,17 +378,17 @@ menu() {
     fi
     echo ""
     
-    echo -e " ${GREEN}1.${PLAIN} ✨ 全新安装"
-    echo -e " ${GREEN}2.${PLAIN} 🔗 查看链接"
-    echo -e " ${GREEN}3.${PLAIN} 📄 查看 YAML"
-    echo -e " ${GREEN}4.${PLAIN} ⛓️  链式代理管理"
-    echo -e " ${GREEN}5.${PLAIN} 🌐 域名与证书"
-    echo -e " ${GREEN}6.${PLAIN} 🎭 修改 SNI"
-    echo -e " ${GREEN}7.${PLAIN} 🔄 重启服务"
-    echo -e " ${GREEN}8.${PLAIN} 🗑️  卸载脚本"
-    echo -e " ${GREEN}9.${PLAIN} 🚀 BBR [$(check_bbr_status)]"
+    echo -e " ${GREEN}1.${PLAIN}  ✨ 全新安装"
+    echo -e " ${GREEN}2.${PLAIN}  🔗 查看链接"
+    echo -e " ${GREEN}3.${PLAIN}  📄 查看 YAML"
+    echo -e " ${GREEN}4.${PLAIN}  ⛓️ 链式代理管理"
+    echo -e " ${GREEN}5.${PLAIN}  🌐 域名与证书"
+    echo -e " ${GREEN}6.${PLAIN}  🎭 修改 SNI"
+    echo -e " ${GREEN}7.${PLAIN}  🔄 重启服务"
+    echo -e " ${GREEN}8.${PLAIN}  🗑️ 卸载脚本"
+    echo -e " ${GREEN}9.${PLAIN}  🚀 BBR [$(check_bbr_status)]"
     echo -e " ${GREEN}10.${PLAIN} 🖍️ DNS 策略管理"
-    echo -e " ${GREEN}0.${PLAIN} 🚪 退出"
+    echo -e " ${GREEN}0.${PLAIN}  🚪 退出"
     echo ""
     
     read -p " 请输入选项: " num
