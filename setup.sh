@@ -2,7 +2,7 @@
 
 # ==================================================
 # Project: ElJefe-V2 Manager (Pro)
-# Version: v15.6 (Final Fix: Reality YAML ServerName)
+# Version: v15.7 (Add: DNS Check / Cert Renew / Clean / Status)
 # Features: Reality/VLESS/VMess | Self-Healing | YAML Fix
 # Author: eljefeZZZ
 # ==================================================
@@ -48,10 +48,10 @@ install_dependencies() {
     log_info "安装依赖..."
     if [ -f /etc/debian_version ]; then
         apt-get update -y
-        apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat psmisc
+        apt-get install -y curl wget unzip jq nginx uuid-runtime openssl cron lsof socat psmisc dnsutils
     elif [ -f /etc/redhat-release ]; then
         yum update -y
-        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof psmisc
+        yum install -y curl wget unzip jq nginx uuid socat openssl cronie lsof psmisc bind-utils
     else
         log_err "不支持的系统" && exit 1
     fi
@@ -83,14 +83,34 @@ setup_fake_site() {
 setup_cert() {
     local domain=$1
     log_info "正在为域名 $domain 申请证书..."
+
+    # [完善2] 申请证书前验证域名 DNS 解析是否指向本机，避免 acme challenge 失败
+    local server_ip=$(curl -s https://api.ipify.org)
+    local domain_ip=$(dig +short "$domain" A | tail -1)
+    if [[ -z "$domain_ip" ]]; then
+        log_err "域名 $domain 无法解析，请先配置 DNS A 记录！"
+        return 1
+    fi
+    if [[ "$server_ip" != "$domain_ip" ]]; then
+        log_err "域名解析 IP ($domain_ip) 与服务器 IP ($server_ip) 不匹配，请先将域名解析到本机！"
+        return 1
+    fi
+    log_info "DNS 验证通过：$domain -> $server_ip"
+
     mkdir -p "$ACME_DIR"
     curl https://get.acme.sh | sh -s email=admin@eljefe.com --home "$ACME_DIR"
     
     # [核心优化] 强力释放 80 端口
     systemctl stop nginx
     fuser -k 80/tcp
+    sleep 2
 
+    # [完善5] 重新申请前先移除旧证书，避免缓存干扰 --force 时的行为
+    "$ACME_SCRIPT" --remove -d "$domain" --ecc 2>/dev/null && log_info "已清理旧证书记录"
+
+    # 切换默认 CA 为 Let's Encrypt，避免 ZeroSSL account not registered 错误
     "$ACME_SCRIPT" --set-default-ca --server letsencrypt
+
     "$ACME_SCRIPT" --issue -d "$domain" --standalone --keylength ec-256 --force
     
     if [ $? -eq 0 ]; then
@@ -102,9 +122,19 @@ setup_cert() {
             
         chown "$XRAY_USER:$XRAY_USER" "$CERT_DIR/private.key" "$CERT_DIR/fullchain.cer"
         chmod 600 "$CERT_DIR/private.key"
+
+        # [完善4] 验证 acme.sh 自动续期 cron 任务是否存在，不存在则手动添加
+        if ! crontab -l 2>/dev/null | grep -q "acme.sh"; then
+            log_warn "未检测到 acme.sh 定时续期任务，正在手动添加..."
+            (crontab -l 2>/dev/null; echo "0 0 * * * $ACME_SCRIPT --cron --home $ACME_DIR > /dev/null 2>&1") | crontab -
+            log_info "续期定时任务已添加（每天 00:00 检查）"
+        else
+            log_info "acme.sh 续期定时任务已存在，无需重复添加"
+        fi
+
         return 0
     else
-        log_err "证书申请失败！请检查域名解析。"
+        log_err "证书申请失败！请检查域名解析和 80 端口是否正常。"
         return 1
     fi
 }
@@ -384,7 +414,7 @@ show_info() {
     source "$INFO_FILE"
     local ip=$(curl -s https://api.ipify.org)
     
-    echo -e "\n${GREEN}=== 节点配置信息 (v15.6) ===${PLAIN}"
+    echo -e "\n${GREEN}=== 节点配置信息 (v15.7) ===${PLAIN}"
     echo -e "UUID: $UUID"
     echo -e "Reality Key: $PUB_KEY"
     echo -e "------------------------"
@@ -514,9 +544,34 @@ toggle_bbr() {
     menu
 }
 
+# [完善6] 新增：查看服务运行状态函数
+show_status() {
+    echo -e "\n${GREEN}=== 服务运行状态 ===${PLAIN}"
+
+    # Xray 服务状态
+    echo -e "${YELLOW}--- eljefe-v2 (Xray) ---${PLAIN}"
+    systemctl status eljefe-v2 --no-pager -l
+
+    echo ""
+
+    # Nginx 服务状态
+    echo -e "${YELLOW}--- Nginx ---${PLAIN}"
+    systemctl status nginx --no-pager -l
+
+    echo ""
+
+    # 端口监听情况
+    echo -e "${YELLOW}--- 端口监听 ---${PLAIN}"
+    ss -tlnp | grep -E ":($PORT_REALITY|$PORT_VLESS_WS|$PORT_VMESS_WS|$PORT_TLS) " || echo "未检测到相关端口监听"
+
+    read -p "按回车键返回菜单..."
+    menu
+}
+
 menu() {
     clear
-    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.6 Final Fix]${PLAIN}"
+    # [完善6] 版本号更新为 v15.7，菜单新增选项 10「查看服务状态」
+    echo -e " ${GREEN}ElJefe-V2 管理面板${PLAIN} ${YELLOW}[v15.7]${PLAIN}"
     echo -e "----------------------------------"
     echo -e " ${GREEN}1.${PLAIN} 全新安装"
     echo -e " ${GREEN}2.${PLAIN} 查看链接"
@@ -527,6 +582,7 @@ menu() {
     echo -e " ${GREEN}7.${PLAIN} 重启服务"
     echo -e " ${GREEN}8.${PLAIN} 卸载脚本"
     echo -e " ${GREEN}9.${PLAIN} 开启/关闭 BBR [当前: $(check_bbr_status)]"
+    echo -e " ${GREEN}10.${PLAIN} 查看服务状态"
     echo -e " ${GREEN}0.${PLAIN} 退出"
     echo -e "----------------------------------"
     read -p "请输入选项: " num
@@ -567,6 +623,8 @@ menu() {
         7) systemctl restart eljefe-v2 && log_info "服务已重启" ;;
         8) uninstall_all ;;
         9) toggle_bbr ;;
+        # [完善6] 新增选项 10，调用 show_status 函数
+        10) show_status ;;
         0) exit 0 ;;
         *) log_err "无效选项" ;;
     esac
