@@ -89,7 +89,8 @@ setup_cert() {
     # [核心优化] 强力释放 80 端口
     systemctl stop nginx
     fuser -k 80/tcp
-    
+
+    "$ACME_SCRIPT" --set-default-ca --server letsencrypt
     "$ACME_SCRIPT" --issue -d "$domain" --standalone --keylength ec-256 --force
     
     if [ $? -eq 0 ]; then
